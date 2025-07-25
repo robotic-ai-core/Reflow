@@ -1,0 +1,52 @@
+# Lightning Reflow CLI Configuration Example
+# Usage: python example_train.py fit --config example_config.yaml
+
+# Model configuration
+model:
+  class_path: lightning_reflow.models.SimpleReflowModel
+  init_args:
+    input_dim: 20
+    hidden_dim: 128
+    output_dim: 3
+    learning_rate: 0.001
+    loss_type: "cross_entropy"
+
+# Data module configuration  
+data:
+  class_path: lightning_reflow.data.SimpleDataModule
+  init_args:
+    batch_size: 32
+    train_samples: 1000
+    val_samples: 200
+    test_samples: 100
+    input_dim: 20
+    output_dim: 3
+    task_type: "classification"
+    seed: 42
+
+# Trainer configuration
+trainer:
+  max_epochs: 10
+  max_steps: -1  # Train for full epochs
+  enable_checkpointing: true
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 10
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: lightning-reflow-example
+      name: config-example-run
+      save_dir: ./logs
+
+# Optimizer configuration (optional)
+optimizer:
+  class_path: torch.optim.AdamW
+  init_args:
+    lr: 0.001
+    weight_decay: 0.01
+
+# Learning rate scheduler (optional)
+lr_scheduler:
+  class_path: torch.optim.lr_scheduler.CosineAnnealingLR
+  init_args:
+    T_max: 10 
