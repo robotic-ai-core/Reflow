@@ -67,6 +67,14 @@ class SimpleDataset(Dataset):
         return self.num_samples
     
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        # Support negative indexing
+        if idx < 0:
+            idx = self.num_samples + idx
+        
+        # Check bounds
+        if idx < 0 or idx >= self.num_samples:
+            raise IndexError(f"Index {idx} out of range for dataset of size {self.num_samples}")
+            
         inputs, targets = self.data
         return {
             "input": inputs[idx],

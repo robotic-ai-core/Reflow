@@ -118,12 +118,17 @@ class TestSimpleDataset:
             assert "input" in sample
             assert "target" in sample
         
+        # Test negative indexing (now supported)
+        sample = dataset[-1]
+        assert "input" in sample
+        assert "target" in sample
+        
         # Test invalid indices
         with pytest.raises(IndexError):
             dataset[50]  # Out of bounds
         
         with pytest.raises(IndexError):
-            dataset[-1]  # Negative indexing not implemented
+            dataset[-51]  # Out of bounds negative
 
 
 class TestSimpleDataModule:
@@ -308,17 +313,18 @@ class TestSimpleDataModule:
         val_dl = dm.val_dataloader()
         test_dl = dm.test_dataloader()
         
-        # Train should shuffle, val/test should not
-        assert train_dl.sampler.shuffle is True
-        assert val_dl.sampler.shuffle is False
-        assert test_dl.sampler.shuffle is False
+        # Train should shuffle (RandomSampler), val/test should not (SequentialSampler)
+        from torch.utils.data import RandomSampler, SequentialSampler
+        assert isinstance(train_dl.sampler, RandomSampler)
+        assert isinstance(val_dl.sampler, SequentialSampler)
+        assert isinstance(test_dl.sampler, SequentialSampler)
     
     def test_hyperparameter_saving(self):
         """Test that hyperparameters are saved correctly."""
         dm = SimpleDataModule(
             batch_size=16,
             input_dim=128,
-            learning_rate=0.01  # This would be ignored but should be in hparams
+            # learning_rate would be for model, not data module
         )
         
         # Check that hparams are saved
