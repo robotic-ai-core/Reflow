@@ -5,10 +5,52 @@ This module provides a minimal implementation of the manager state system
 for tracking component states during checkpoint operations.
 """
 
+# ---------------------------------------------------------------------------
+# Compatibility shim
+# ---------------------------------------------------------------------------
+# The Yggdrasil code-base contains a full-featured manager_state implementation
+# under `modules.utils.checkpoint.manager_state`.  To avoid duplicate global
+# registries (which would lead to missing manager entries during tests) we
+# delegate all public symbols to that canonical implementation whenever it is
+# importable.  This keeps the lightning_reflow copy lightweight while ensuring
+# both packages share the exact same state registry.
+
+# Always import Protocol for typing compatibility
 from typing import Dict, Any, List, Optional, Protocol
 import logging
 
 logger = logging.getLogger(__name__)
+
+try:
+    # Attempt to import the canonical implementation from Yggdrasil
+    from modules.utils.checkpoint.manager_state import (  # type: ignore
+        ManagerState,
+        EnvironmentManagerState,
+        ManagerStateRegistry,
+        get_global_registry,
+        register_manager,
+        unregister_manager,
+        capture_all_manager_states,
+        restore_all_manager_states,
+    )
+
+    # Expose imported symbols as this module's public API so existing import
+    # paths continue to work transparently.
+    __all__ = [
+        'ManagerState',
+        'EnvironmentManagerState',
+        'ManagerStateRegistry',
+        'get_global_registry',
+        'register_manager',
+        'unregister_manager',
+        'capture_all_manager_states',
+        'restore_all_manager_states',
+    ]
+
+except ImportError:  # pragma: no cover
+    # Fallback to the (simplified) built-in implementation originally shipped
+    # with lightning_reflow.  The definitions below remain unchanged.
+    pass
 
 
 class ManagerState(Protocol):
@@ -170,3 +212,21 @@ __all__ = [
     'capture_all_manager_states',
     'restore_all_manager_states'
 ] 
+
+# ---------------------------------------------------------------------------
+# Ensure that the delegation remains authoritative even if fallback classes
+# were defined later in this file.
+# ---------------------------------------------------------------------------
+try:
+    from modules.utils.checkpoint import manager_state as _canonical
+    register_manager = _canonical.register_manager  # type: ignore  # noqa: F401
+    unregister_manager = _canonical.unregister_manager  # type: ignore  # noqa: F401
+    get_global_registry = _canonical.get_global_registry  # type: ignore  # noqa: F401
+    capture_all_manager_states = _canonical.capture_all_manager_states  # noqa: F401
+    restore_all_manager_states = _canonical.restore_all_manager_states  # noqa: F401
+    ManagerState = _canonical.ManagerState  # type: ignore  # noqa: F401
+    EnvironmentManagerState = _canonical.EnvironmentManagerState  # type: ignore  # noqa: F401
+    ManagerStateRegistry = _canonical.ManagerStateRegistry  # type: ignore  # noqa: F401
+except ImportError:
+    # Canonical implementation not available – nothing to override.
+    pass 

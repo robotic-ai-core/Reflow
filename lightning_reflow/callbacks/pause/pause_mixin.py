@@ -234,8 +234,11 @@ class PauseMixin:
     
     def _print_resume_commands(self, trainer: pl.Trainer, checkpoint_path: str, upload_successful: bool) -> None:
         """Print resume commands based on what's available."""
+        # Ensure commands start with "python" for easy copy-paste
+        legacy_command = f"python {' '.join(self._original_argv)}" if not self._original_argv[0].startswith("python") else ' '.join(self._original_argv)
+        
         print(f"\n🔄 Training paused. Resume options:")
-        print(f"📁 Local resume:  python {' '.join(self._original_argv)} --ckpt_path {checkpoint_path}")
+        print(f"📁 Local resume:  {legacy_command} --ckpt_path {checkpoint_path}")
         
         if upload_successful:
             print(f"☁️  W&B resume:   Use the artifact resume command from W&B logs above")

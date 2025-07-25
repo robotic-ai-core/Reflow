@@ -154,7 +154,19 @@ class FlowProgressBarCallback(LearningRateMonitor):
         """Update interval progress bar postfix with metrics."""
         if self.current_interval_bar is None or not self._interval_metrics:
             return
-        self.current_interval_bar.set_postfix_str(self._format_metrics_postfix(self._interval_metrics))
+        
+        # Get the base postfix with metrics
+        base_postfix = self._format_metrics_postfix(self._interval_metrics)
+        
+        # Add steps until next validation if pause is scheduled
+        if hasattr(self, '_state_machine') and hasattr(self, '_get_steps_until_next_validation'):
+            # Check if we're in PauseCallback (has these attributes)
+            if hasattr(self._state_machine, 'is_pause_scheduled') and self._state_machine.is_pause_scheduled():
+                steps_until_val = self._get_steps_until_next_validation(self._trainer, self._current_batch_idx or 0)
+                if steps_until_val is not None:
+                    base_postfix += f" | Next Val: {steps_until_val} steps"
+        
+        self.current_interval_bar.set_postfix_str(base_postfix)
 
     def _get_pause_status_suffix(self) -> str:
         """Get status suffix for progress bar descriptions. Override in subclasses."""
@@ -264,24 +276,47 @@ class FlowProgressBarCallback(LearningRateMonitor):
             bar.refresh()
 
     def _calculate_interval_progress(self, trainer: "pl.Trainer", batch_idx: int) -> int:
-        """Calculate progress within current interval."""
         val_interval_steps = self._get_val_check_interval_steps()
+        
         if val_interval_steps:
-            # Calculate steps since last validation to handle drift
-            steps_since_validation = trainer.global_step - self._last_validation_step
-            
-            # VALIDATION BOUNDARY PAUSE FIX:
-            # If steps_since_validation equals or exceeds val_interval_steps,
-            # it means we've completed a full interval and are starting fresh
-            if steps_since_validation >= val_interval_steps:
-                # We're at the start of a new interval after validation
-                # Reset to show we're starting from 0 in this new interval
-                expected_validations = trainer.global_step // val_interval_steps
-                self._last_validation_step = expected_validations * val_interval_steps
+            # For epoch-based validation, calculate steps until next validation
+            check_val_every_n_epoch = getattr(trainer, 'check_val_every_n_epoch', None)
+            if check_val_every_n_epoch:
+                # Calculate which epoch we're in within the validation interval
+                current_epoch = trainer.current_epoch
+                epochs_since_last_val = current_epoch % check_val_every_n_epoch
+                
+                # Get steps per epoch
+                num_training_batches = None
+                if hasattr(trainer, 'num_training_batches') and trainer.num_training_batches != float('inf'):
+                    num_training_batches = trainer.num_training_batches
+                
+                if num_training_batches:
+                    # Calculate steps completed in current epoch
+                    steps_in_current_epoch = batch_idx + 1
+                    
+                    # Calculate total steps completed since last validation
+                    steps_since_validation = (epochs_since_last_val * num_training_batches) + steps_in_current_epoch
+                    
+                    # For display: show progress within the current validation interval
+                    return min(steps_since_validation, val_interval_steps)
+            else:
+                # For step-based validation intervals
+                # Calculate steps since last validation to handle drift
                 steps_since_validation = trainer.global_step - self._last_validation_step
-            
-            # Clamp to interval bounds to prevent exceeding total
-            return min(steps_since_validation, val_interval_steps)
+                
+                # VALIDATION BOUNDARY PAUSE FIX:
+                # If steps_since_validation equals or exceeds val_interval_steps,
+                # it means we've completed a full interval and are starting fresh
+                if steps_since_validation >= val_interval_steps:
+                    # We're at the start of a new interval after validation
+                    # Reset to show we're starting from 0 in this new interval
+                    expected_validations = trainer.global_step // val_interval_steps
+                    self._last_validation_step = expected_validations * val_interval_steps
+                    steps_since_validation = trainer.global_step - self._last_validation_step
+                
+                # Clamp to interval bounds to prevent exceeding total
+                return min(steps_since_validation, val_interval_steps)
         else:
             # For pure epoch-based training without validation intervals
             # progress is the batch within the current epoch
@@ -528,6 +563,40 @@ class FlowProgressBarCallback(LearningRateMonitor):
         
         return None
     
+    def _get_steps_until_next_validation(self, trainer: "pl.Trainer", batch_idx: int) -> Optional[int]:
+        """Calculate actual steps remaining until the next validation."""
+        check_val_every_n_epoch = getattr(trainer, 'check_val_every_n_epoch', None)
+        
+        if check_val_every_n_epoch:
+            # For epoch-based validation
+            current_epoch = trainer.current_epoch
+            next_val_epoch = ((current_epoch // check_val_every_n_epoch) + 1) * check_val_every_n_epoch
+            epochs_until_val = next_val_epoch - current_epoch
+            
+            # Get steps per epoch
+            num_training_batches = None
+            if hasattr(trainer, 'num_training_batches') and trainer.num_training_batches != float('inf'):
+                num_training_batches = trainer.num_training_batches
+            
+            if num_training_batches:
+                # Steps remaining in current epoch
+                steps_left_in_epoch = num_training_batches - (batch_idx + 1)
+                # Plus steps in remaining full epochs
+                steps_in_full_epochs = (epochs_until_val - 1) * num_training_batches
+                return steps_left_in_epoch + steps_in_full_epochs
+        
+        elif trainer.val_check_interval:
+            # For step-based validation
+            val_interval = trainer.val_check_interval
+            if isinstance(val_interval, int):
+                steps_since_last_val = trainer.global_step - self._last_validation_step
+                return val_interval - steps_since_last_val
+            elif isinstance(val_interval, float) and val_interval > 1.0:
+                steps_since_last_val = trainer.global_step - self._last_validation_step
+                return int(val_interval) - steps_since_last_val
+        
+        return None
+
     def _update_total_steps_bar(self, trainer: "pl.Trainer") -> None:
         if self.total_steps_bar is None or not self.is_enabled: 
             return
@@ -663,7 +732,15 @@ class FlowProgressBarCallback(LearningRateMonitor):
         if val_interval_steps:
             interval_total = val_interval_steps
             if self._trainer.val_check_interval or (hasattr(self._trainer, 'check_val_every_n_epoch') and self._trainer.check_val_every_n_epoch):
-                interval_desc = f"Interval {self._trainer.current_epoch + 1} (Steps to Val)"
+                # For epoch-based validation, be more specific about what we're showing
+                check_val_every_n_epoch = getattr(self._trainer, 'check_val_every_n_epoch', None)
+                if check_val_every_n_epoch:
+                    # Show which epoch we're in within the validation cycle
+                    current_epoch = self._trainer.current_epoch
+                    epoch_in_cycle = (current_epoch % check_val_every_n_epoch) + 1
+                    interval_desc = f"Validation Cycle {self._trainer.current_epoch // check_val_every_n_epoch + 1} - Epoch {epoch_in_cycle}/{check_val_every_n_epoch}"
+                else:
+                    interval_desc = f"Interval {self._trainer.current_epoch + 1} (Steps to Val)"
             else:
                 interval_desc = f"Interval {self._trainer.current_epoch + 1} (Steps to Sample)"
         elif not self._is_iterable_dataset() and hasattr(trainer, 'num_training_batches') and trainer.num_training_batches != float('inf'):

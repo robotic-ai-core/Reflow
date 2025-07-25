@@ -118,12 +118,8 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         if (self._state_machine.is_pause_scheduled() and 
             trainer.global_step > 0 and 
             not self._debug_hooks_enabled):
-            # Check if this is an end-of-epoch validation
-            is_end_of_epoch = self._is_end_of_epoch_validation(trainer)
-            if is_end_of_epoch:
-                self._execute_epoch_boundary_pause(trainer, pl_module)
-            else:
-                self._execute_validation_boundary_pause(trainer, pl_module)
+            # Always use validation boundary pause for consistency and robustness
+            self._execute_validation_boundary_pause(trainer, pl_module)
             
     def _is_end_of_epoch_validation(self, trainer: Trainer) -> bool:
         """Check if this validation is happening at the end of an epoch."""
@@ -146,10 +142,11 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
 
     def on_train_epoch_end(self, trainer: Trainer, pl_module: LightningModule):
         super().on_train_epoch_end(trainer, pl_module)
-        # Execute pause at epoch boundaries when scheduled
-        # but not when debug hooks are enabled (for testing)
-        if self._state_machine.is_pause_scheduled() and not self._debug_hooks_enabled:
-            self._execute_epoch_boundary_pause(trainer, pl_module)
+        # DISABLED: Epoch boundary pausing removed for production robustness
+        # Validation boundary pausing is more reliable and sufficient
+        # if self._state_machine.is_pause_scheduled() and not self._debug_hooks_enabled:
+        #     self._execute_epoch_boundary_pause(trainer, pl_module)
+        pass
             
     def _execute_epoch_boundary_pause(self, trainer: Trainer, pl_module: LightningModule):
         should_upload = self._state_machine.is_upload_requested()
@@ -226,7 +223,7 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         self._last_key_time = current_time
         return False
 
-    def _get_checkpoint_path(self, trainer: Trainer, upload: bool) -> Path:
+    def _get_checkpoint_path(self, trainer: Trainer, upload: bool = False) -> Path:
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         timestamp = int(time.time())
         tag = "upload" if upload else "pause"
@@ -428,20 +425,27 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         if not hasattr(self, '_original_argv') or not self._original_argv:
             raise ValueError("Original argv not stored - cannot generate resume commands")
         
-        # Extract script name from original argv (usually first element)
-        script_name = self._original_argv[0] if self._original_argv else "python train_lightning.py"
+        # Extract script name and ensure "python" is included for copy-paste convenience
+        script_name = self._original_argv[0] if self._original_argv else "train_lightning.py"
+        
+        # Ensure commands start with "python" for easy copy-paste
+        if not script_name.startswith("python"):
+            script_command = f"python {script_name}"
+        else:
+            script_command = script_name
         
         print(f"\n🔄 Training paused. Resume options:")
-        print(f"📁 Local resume:    {script_name} resume --checkpoint-path {checkpoint_path}")
+        print(f"📁 Local resume:    {script_command} resume --checkpoint-path {checkpoint_path}")
         
         if artifact_path:
-            print(f"☁️  W&B resume:     {script_name} resume --checkpoint-artifact {artifact_path}")
+            print(f"☁️  W&B resume:     {script_command} resume --checkpoint-artifact {artifact_path}")
         
         # Also show the legacy method for backward compatibility
-        print(f"📁 Legacy method:   {' '.join(self._original_argv)} --ckpt_path {checkpoint_path}")
+        legacy_command = f"python {' '.join(self._original_argv)}" if not self._original_argv[0].startswith("python") else ' '.join(self._original_argv)
+        print(f"📁 Legacy method:   {legacy_command} --ckpt_path {checkpoint_path}")
         if artifact_path:
             # For legacy method, we can use --resume_from_wandb flag
-            print(f"☁️  Legacy W&B:     {' '.join(self._original_argv)} --resume_from_wandb {artifact_path}")
+            print(f"☁️  Legacy W&B:     {legacy_command} --resume_from_wandb {artifact_path}")
 
     def _check_debug_hooks(self):
         """Check for debug hook environment variables and trigger appropriate states."""
@@ -513,3 +517,59 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
             checkpoint['pause_callback_metadata'].update(pause_metadata)
         else:
             checkpoint['pause_callback_metadata'] = pause_metadata
+
+    def _update_interval_bar_postfix(self) -> None:
+        """Override to add validation timing info when pause is scheduled."""
+        if self.current_interval_bar is None or not self._interval_metrics:
+            return
+        
+        # Get the base postfix with metrics
+        base_postfix = self._format_metrics_postfix(self._interval_metrics)
+        
+        # Add steps until next validation if pause is scheduled
+        if self._state_machine.is_pause_scheduled() and self._trainer:
+            # Import the method from parent if needed
+            if hasattr(super(), '_get_steps_until_next_validation'):
+                steps_until_val = super()._get_steps_until_next_validation(self._trainer, self._current_batch_idx or 0)
+            else:
+                # Calculate it here if parent doesn't have the method
+                steps_until_val = self._calculate_steps_until_validation(self._trainer, self._current_batch_idx or 0)
+            
+            if steps_until_val is not None:
+                base_postfix += f" | ⏸️ Pause in: {steps_until_val} steps"
+        
+        self.current_interval_bar.set_postfix_str(base_postfix)
+    
+    def _calculate_steps_until_validation(self, trainer: Trainer, batch_idx: int) -> Optional[int]:
+        """Calculate actual steps remaining until the next validation."""
+        check_val_every_n_epoch = getattr(trainer, 'check_val_every_n_epoch', None)
+        
+        if check_val_every_n_epoch:
+            # For epoch-based validation
+            current_epoch = trainer.current_epoch
+            next_val_epoch = ((current_epoch // check_val_every_n_epoch) + 1) * check_val_every_n_epoch
+            epochs_until_val = next_val_epoch - current_epoch
+            
+            # Get steps per epoch
+            num_training_batches = None
+            if hasattr(trainer, 'num_training_batches') and trainer.num_training_batches != float('inf'):
+                num_training_batches = trainer.num_training_batches
+            
+            if num_training_batches:
+                # Steps remaining in current epoch
+                steps_left_in_epoch = num_training_batches - (batch_idx + 1)
+                # Plus steps in remaining full epochs
+                steps_in_full_epochs = (epochs_until_val - 1) * num_training_batches
+                return steps_left_in_epoch + steps_in_full_epochs
+        
+        elif trainer.val_check_interval:
+            # For step-based validation
+            val_interval = trainer.val_check_interval
+            if isinstance(val_interval, int):
+                steps_since_last_val = trainer.global_step - self._last_validation_step
+                return val_interval - steps_since_last_val
+            elif isinstance(val_interval, float) and val_interval > 1.0:
+                steps_since_last_val = trainer.global_step - self._last_validation_step
+                return int(val_interval) - steps_since_last_val
+        
+        return None
