@@ -1,10 +1,3 @@
-from .lightning_cli import LightningReflowCLI
+from .lightning_cli import LightningReflowCLI, main
 
-__all__ = ["LightningReflowCLI"]
-
-def main():
-    """Main entry point for the lightning-reflow console script."""
-    cli = LightningReflowCLI()
-
-if __name__ == "__main__":
-    main() 
+__all__ = ["LightningReflowCLI", "main"] 

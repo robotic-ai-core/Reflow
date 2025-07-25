@@ -11,6 +11,7 @@ __email__ = ""
 __license__ = "MIT"
 
 # Core imports - expose main components
+from lightning_reflow.core import LightningReflow
 from lightning_reflow.cli import LightningReflowCLI
 from lightning_reflow.models import SimpleReflowModel
 from lightning_reflow.data import SimpleDataModule
@@ -32,6 +33,7 @@ from lightning_reflow.utils.logging import EnvironmentManager
 
 __all__ = [
     # Core components
+    "LightningReflow",
     "LightningReflowCLI",
     "SimpleReflowModel", 
     "SimpleDataModule",

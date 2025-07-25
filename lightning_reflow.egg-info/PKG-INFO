@@ -1,0 +1,254 @@
+Metadata-Version: 2.4
+Name: lightning-reflow
+Version: 0.1.0
+Summary: A self-contained Lightning PyTorch framework extension with advanced pause/resume, W&B integration, and CLI capabilities.
+Author: Lightning Reflow Contributors
+Maintainer: Lightning Reflow Contributors
+License: MIT
+Project-URL: Homepage, https://github.com/username/lightning-reflow
+Project-URL: Repository, https://github.com/username/lightning-reflow
+Project-URL: Documentation, https://github.com/username/lightning-reflow#readme
+Project-URL: Bug Tracker, https://github.com/username/lightning-reflow/issues
+Keywords: pytorch,lightning,machine-learning,deep-learning,wandb,training,checkpointing
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: torch>=1.9.0
+Requires-Dist: lightning>=2.0.0
+Requires-Dist: wandb>=0.12.0
+Requires-Dist: omegaconf>=2.1.0
+Requires-Dist: pyyaml>=5.4.0
+Requires-Dist: numpy>=1.20.0
+Requires-Dist: scipy>=1.7.0
+Requires-Dist: typing-extensions>=4.0.0; python_version < "3.10"
+Provides-Extra: dev
+Requires-Dist: pytest>=6.0.0; extra == "dev"
+Requires-Dist: pytest-cov>=2.12.0; extra == "dev"
+Requires-Dist: black>=21.0.0; extra == "dev"
+Requires-Dist: flake8>=3.9.0; extra == "dev"
+Requires-Dist: mypy>=0.910; extra == "dev"
+Requires-Dist: pre-commit>=2.15.0; extra == "dev"
+Provides-Extra: test
+Requires-Dist: pytest>=6.0.0; extra == "test"
+Requires-Dist: pytest-cov>=2.12.0; extra == "test"
+Requires-Dist: pytest-mock>=3.6.0; extra == "test"
+Dynamic: license-file
+
+# Lightning Reflow
+
+A self-contained Lightning PyTorch framework extension with advanced pause/resume, W&B integration, and CLI capabilities.
+
+## Overview
+
+Lightning Reflow provides a comprehensive training framework built on PyTorch Lightning with the following key features:
+
+- **Advanced Pause/Resume**: Sophisticated pause/resume functionality with checkpoint management
+- **W&B Integration**: Deep Weights & Biases integration with artifact management 
+- **Extended CLI**: Enhanced Lightning CLI with resume subcommands and config management
+- **Callback System**: Rich callback ecosystem for monitoring, logging, and training control
+- **Config Management**: Advanced configuration synthesis and override capabilities
+
+## Directory Structure
+
+```
+lightning_reflow/
+├── callbacks/          # Training callbacks
+│   ├── core/          # Core callbacks (config embedding, memory cleanup)
+│   ├── logging/       # Logging callbacks
+│   ├── monitoring/    # Training monitoring callbacks
+│   ├── pause/         # Pause/resume functionality
+│   └── wandb/         # W&B integration callbacks
+├── cli/               # Enhanced Lightning CLI
+│   └── lightning_cli.py
+├── data/              # Data modules (minimal for testing)
+│   └── simple_data.py
+├── models/            # Model implementations (minimal for testing)  
+│   └── simple_model.py
+├── utils/             # Utilities
+│   ├── checkpoint/    # Checkpoint management
+│   ├── config/        # Configuration utilities
+│   ├── logging/       # Logging utilities
+│   └── wandb/         # W&B utilities
+└── tests/             # Comprehensive test suite
+    ├── integration/   # Integration tests
+    ├── unit/          # Unit tests
+    └── fixtures/      # Test fixtures
+```
+
+## Quick Start
+
+### Basic Training
+
+```python
+from lightning_reflow.models import SimpleReflowModel
+from lightning_reflow.data import SimpleDataModule
+import lightning.pytorch as pl
+
+# Create model and data
+model = SimpleReflowModel(input_dim=784, hidden_dim=128, output_dim=10)
+data = SimpleDataModule(batch_size=32, train_samples=1000)
+
+# Train
+trainer = pl.Trainer(max_epochs=10)
+trainer.fit(model, data)
+```
+
+### CLI Usage
+
+```bash
+# Basic training
+python -m lightning_reflow.cli fit --model.learning_rate=0.01 --trainer.max_epochs=10
+
+# Resume from checkpoint
+python -m lightning_reflow.cli resume --checkpoint-path /path/to/checkpoint.ckpt
+
+# Resume from W&B artifact
+python -m lightning_reflow.cli resume --checkpoint-artifact entity/project/run-id:latest
+```
+
+### With Configuration Files
+
+```yaml
+# config.yaml
+model:
+  class_path: lightning_reflow.models.SimpleReflowModel
+  init_args:
+    input_dim: 784
+    hidden_dim: 256
+    output_dim: 10
+    learning_rate: 0.001
+
+data:
+  class_path: lightning_reflow.data.SimpleDataModule
+  init_args:
+    batch_size: 64
+    train_samples: 5000
+
+trainer:
+  max_epochs: 50
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: my-project
+```
+
+```bash
+python -m lightning_reflow.cli fit --config config.yaml
+```
+
+## Key Features
+
+### Pause/Resume System
+
+The pause/resume system allows interrupting training gracefully and resuming from the exact same state:
+
+- **Keyboard Interrupt Handling**: Press 'p' to pause, 'w' to upload checkpoint
+- **State Preservation**: Complete training state including RNG states
+- **W&B Integration**: Automatic artifact upload and resume command generation
+- **Config Embedding**: Training configuration embedded in checkpoints
+
+### W&B Integration
+
+Deep integration with Weights & Biases:
+
+- **Artifact Management**: Automatic checkpoint upload as versioned artifacts
+- **Run Continuity**: Resume training with the same W&B run ID
+- **Config Syncing**: Configuration synchronization between local and W&B
+- **Resume Commands**: Auto-generated resume commands in W&B interface
+
+### Extended CLI
+
+Enhanced Lightning CLI with additional functionality:
+
+- **Resume Subcommand**: Dedicated resume subcommand with artifact support
+- **Config Merging**: Sophisticated configuration override and merging
+- **Argument Linking**: Advanced CLI argument to config parameter linking
+- **Dry Run Mode**: Preview commands before execution
+
+## Testing
+
+Comprehensive test suite with both unit and integration tests:
+
+```bash
+# Run all tests
+python tests/test_runner.py --type all
+
+# Run specific test categories
+python tests/test_runner.py --type unit
+python tests/test_runner.py --type integration
+python tests/test_runner.py --type cli
+
+# Run with coverage
+python tests/test_runner.py --type coverage
+```
+
+### Test Categories
+
+- **Unit Tests**: Individual component testing
+- **Integration Tests**: Cross-component integration testing
+- **CLI Tests**: Command-line interface testing
+- **End-to-End Tests**: Complete pipeline testing
+
+## Development
+
+### Adding New Components
+
+1. Implement the component in the appropriate directory
+2. Add comprehensive unit tests in `tests/unit/`
+3. Add integration tests if the component interacts with others
+4. Update documentation and examples
+
+### Running Tests
+
+The test suite is designed to be self-contained with mocked external dependencies:
+
+```bash
+# Quick test of core functionality
+pytest tests/unit/test_simple_model.py -v
+
+# Full integration test suite
+pytest tests/integration/ -v
+
+# Specific functionality tests
+pytest tests/unit/callbacks/ -v
+```
+
+## Architecture
+
+Lightning Reflow is built with a modular architecture:
+
+- **Models**: Minimal test models for pipeline validation
+- **Data**: Simple data modules for testing and examples
+- **Callbacks**: Extensive callback system for training control
+- **CLI**: Extended Lightning CLI with advanced features
+- **Utils**: Supporting utilities for various functionality
+
+The framework is designed to be:
+- **Self-contained**: Minimal external dependencies for core functionality
+- **Testable**: Comprehensive test coverage with mocked dependencies
+- **Extensible**: Easy to add new components and functionality
+- **Compatible**: Works with standard PyTorch Lightning workflows
+
+## Integration with Yggdrasil
+
+While Lightning Reflow is self-contained, it integrates seamlessly with the larger Yggdrasil project:
+
+- Shared callback implementations
+- Compatible checkpoint formats
+- Common utility functions
+- Consistent CLI interface
+
+This allows for easy testing of Lightning Reflow components in isolation while maintaining compatibility with the full Yggdrasil training pipeline.
