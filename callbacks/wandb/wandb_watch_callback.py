@@ -1,7 +1,7 @@
 import lightning.pytorch as pl
 import warnings
 from lightning.pytorch.utilities import rank_zero_only
-from modules.logging_config import get_logger # Relative import
+from lightning_reflow.utils.logging.logging_config import get_logger
 
 class WandbWatchCallback(pl.Callback):
     """Handles the setup of wandb.watch() for logging model gradients and parameters."""

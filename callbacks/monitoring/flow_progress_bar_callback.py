@@ -757,7 +757,7 @@ class FlowProgressBarCallback(LearningRateMonitor):
     def _register_for_state_persistence(self) -> None:
         """Register this callback for manager state persistence."""
         try:
-            from modules.utils.checkpoint.manager_state import register_manager, ManagerState
+            from lightning_reflow.utils.checkpoint.manager_state import register_manager, ManagerState
             import time
             from typing import Dict, Any
             

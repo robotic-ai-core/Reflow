@@ -16,7 +16,7 @@ from lightning.pytorch import Trainer
 from lightning.pytorch.core import LightningModule
 from lightning.pytorch.loggers import WandbLogger
 
-from modules.logging_config import get_logger
+from lightning_reflow.utils.logging.logging_config import get_logger
 
 
 class UnifiedArtifactManager:

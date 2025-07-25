@@ -1,0 +1,14 @@
+include README.md
+include LICENSE
+include pyproject.toml
+include *.md
+recursive-include lightning_reflow *.py
+recursive-include lightning_reflow *.yaml *.yml *.json
+recursive-exclude lightning_reflow *.pyc
+recursive-exclude lightning_reflow __pycache__
+recursive-exclude tests *
+exclude tests/*
+global-exclude *.pyc
+global-exclude __pycache__
+global-exclude .git*
+global-exclude .DS_Store 
