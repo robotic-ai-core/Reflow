@@ -108,8 +108,8 @@ class LightningReflow:
         # Set up resume strategies
         if resume_strategies is None:
             self.resume_strategies = [
-                LocalPathResumeStrategy(),
-                WandbArtifactResumeStrategy()
+                WandbArtifactResumeStrategy(),  # Check W&B artifacts first
+                LocalPathResumeStrategy()        # Then fall back to local paths
             ]
         else:
             self.resume_strategies = resume_strategies
@@ -166,7 +166,9 @@ class LightningReflow:
             return self.result
             
         except Exception as e:
+            import traceback
             logger.error(f"❌ Training failed: {e}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
             raise
         finally:
             # Cleanup resume strategies
@@ -202,6 +204,9 @@ class LightningReflow:
                 **resume_kwargs
             )
             
+            # Store checkpoint path for potential fallback use
+            self._resume_checkpoint_path = str(checkpoint_path)
+            
             # Merge additional config if available
             if additional_config:
                 logger.info("Applying additional configuration from checkpoint source")
@@ -213,29 +218,68 @@ class LightningReflow:
             return self.fit(ckpt_path=str(checkpoint_path))
             
         except Exception as e:
+            import traceback
             logger.error(f"❌ Resume failed: {e}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
             raise
     
     def _create_model(self) -> pl.LightningModule:
-        """Create model from configuration."""
+        """Create model from configuration with enhanced resume support."""
         if self.model_class:
-            # Use provided model class with init args
             model_args = {**self.model_init_args}
             
-            # Merge with config if available - check both locations
-            config_model_args = self.config_loader.get_section("model.init_args", {})
-            if config_model_args:
-                model_args = {**config_model_args, **model_args}
+            # PRIMARY: Use Lightning's proven hyper_parameters during resume
+            if hasattr(self, '_resume_checkpoint_path'):
+                logger.info("⚡ Attempting to use Lightning's hyper_parameters (primary)")
+                try:
+                    lightning_args = self._extract_model_args_from_checkpoint(self._resume_checkpoint_path)
+                    if lightning_args:
+                        model_args.update(lightning_args)
+                        logger.info(f"✅ Using Lightning's hyper_parameters for model creation")
+                except Exception as e:
+                    logger.warning(f"⚠️ Lightning hyper_parameters extraction failed: {e}")
             
-            # Also check for direct model parameters (from overrides like "model.learning_rate")
-            model_section = self.config_loader.get_section("model", {})
-            if model_section:
-                # Extract non-init_args parameters that should go to model constructor
-                for key, value in model_section.items():
-                    if key not in ["class_path", "init_args"]:
-                        model_args[key] = value
+            # FALLBACK: Use embedded config if Lightning's approach didn't provide args OR for fresh training
+            if not model_args or not hasattr(self, '_resume_checkpoint_path'):
+                if not hasattr(self, '_resume_checkpoint_path'):
+                    logger.info("🆕 Fresh training - using config files")
+                else:
+                    logger.info("🔄 Falling back to embedded config extraction")
+                    
+                config_model_section = self.config_loader.get_section("model", {})
+                
+                if config_model_section:
+                    # The primary source of arguments should be the 'init_args' subsection
+                    config_model_args = config_model_section.get("init_args", {})
+                    if isinstance(config_model_args, dict):
+                        model_args.update(config_model_args)
+                    
+                    # Also include top-level args from the 'model' section, for convenience
+                    for key, value in config_model_section.items():
+                        if key not in ["class_path", "init_args"]:
+                            model_args[key] = value
+                    
+                    if model_args:
+                        logger.info(f"✅ Using config for model creation")
+
+            # Convert any nested dictionaries (like 'backbone') to their proper dataclass types
+            try:
+                from ..utils.config.config_synthesis import convert_config_dict_to_dataclasses
+                model_args = convert_config_dict_to_dataclasses(model_args)
+            except ImportError:
+                logger.warning("Config synthesis not available, continuing with dict args")
+            except Exception as e:
+                logger.warning(f"Config synthesis failed: {e}, continuing with dict args")
             
-            logger.info(f"Creating model: {self.model_class.__name__} with args: {model_args}")
+            logger.info(f"Creating model: {self.model_class.__name__} with args: {list(model_args.keys()) if model_args else 'EMPTY'}")
+            
+            # Debug logging for troubleshooting
+            if not model_args:
+                logger.error("❌ CRITICAL: Model args are empty! This will cause process_sampler=None error")
+                logger.error("   Config sections available: %s", list(self.config.keys()) if self.config else "No config")
+                if config_model_section:
+                    logger.error("   Model section keys: %s", list(config_model_section.keys()))
+            
             return self.model_class(**model_args)
         
         else:
@@ -250,10 +294,45 @@ class LightningReflow:
             if not class_path:
                 raise ValueError("model.class_path not specified in configuration")
             
+            # Convert init_args if needed
+            try:
+                from ..utils.config.config_synthesis import convert_config_dict_to_dataclasses
+                init_args = convert_config_dict_to_dataclasses(init_args)
+            except Exception as e:
+                logger.warning(f"Config synthesis failed for init_args: {e}")
+            
             # Import and instantiate the model class
             model_class = self._import_class(class_path)
             logger.info(f"Creating model from config: {class_path}")
             return model_class(**init_args)
+    
+    def _extract_model_args_from_checkpoint(self, checkpoint_path: str) -> Dict[str, Any]:
+        """
+        Extract model arguments from Lightning's native hyper_parameters.
+        This serves as a robust fallback when embedded config fails.
+        """
+        try:
+            import torch
+            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+            
+            if 'hyper_parameters' not in checkpoint:
+                logger.warning("No hyper_parameters found in checkpoint")
+                return {}
+            
+            hparams = checkpoint['hyper_parameters']
+            
+            # Extract model parameters (excluding Lightning internal fields)
+            model_params = {}
+            for key, value in hparams.items():
+                if not key.startswith('_'):  # Skip Lightning internal fields
+                    model_params[key] = value
+            
+            logger.info(f"📦 Extracted {len(model_params)} model parameters from Lightning checkpoint")
+            return model_params
+            
+        except Exception as e:
+            logger.error(f"Failed to extract model args from checkpoint: {e}")
+            return {}
     
     def _create_datamodule(self) -> Optional[pl.LightningDataModule]:
         """Create datamodule from configuration."""
@@ -309,6 +388,53 @@ class LightningReflow:
         callbacks = self._prepare_callbacks(trainer_config.get("callbacks", []))
         trainer_config["callbacks"] = callbacks
         
+        # Handle logger configuration - ensure it's not a string
+        if "logger" in trainer_config:
+            logger_cfg = trainer_config["logger"]
+            
+            # Convert OmegaConf to dict if needed
+            try:
+                from omegaconf import DictConfig, OmegaConf
+                if isinstance(logger_cfg, DictConfig):
+                    logger_cfg = OmegaConf.to_container(logger_cfg, resolve=True)
+                    trainer_config["logger"] = logger_cfg
+            except ImportError:
+                pass
+            
+            if isinstance(logger_cfg, str):
+                # If logger is a string, remove it or convert to proper logger config
+                logger.warning(f"Logger configuration is a string: {logger_cfg}. Removing it.")
+                trainer_config.pop("logger")
+            elif isinstance(logger_cfg, list):
+                # Filter out any string loggers in the list
+                valid_loggers = []
+                for l in logger_cfg:
+                    if isinstance(l, str):
+                        logger.warning(f"Skipping string logger: {l}")
+                    else:
+                        valid_loggers.append(l)
+                trainer_config["logger"] = valid_loggers if valid_loggers else None
+            elif isinstance(logger_cfg, dict):
+                # Check if it's a dict config for a logger
+                if "_target_" in logger_cfg:
+                    # This is likely a hydra/omegaconf instantiation config
+                    logger.info(f"Logger config has _target_: {logger_cfg.get('_target_')}")
+                    # For now, remove it to avoid issues
+                    logger.warning("Removing logger config with _target_ to avoid instantiation issues")
+                    trainer_config.pop("logger")
+                elif "class_path" in logger_cfg:
+                    # This is a Lightning CLI-style logger config
+                    try:
+                        logger_class = self._import_class(logger_cfg["class_path"])
+                        init_args = logger_cfg.get("init_args", {})
+                        logger_instance = logger_class(**init_args)
+                        trainer_config["logger"] = logger_instance
+                        logger.info(f"Created logger instance: {logger_class.__name__}")
+                    except Exception as e:
+                        logger.warning(f"Failed to create logger from config: {e}")
+                        trainer_config.pop("logger", None)
+        
+        
         logger.info(f"Creating trainer with {len(callbacks)} callbacks")
         return pl.Trainer(**trainer_config)
     
@@ -329,7 +455,43 @@ class LightningReflow:
         # Add additional callbacks provided programmatically
         all_callbacks.extend(self.additional_callbacks)
         
+        # Ensure PauseCallback is present for progress bar functionality
+        # This is critical for user experience during both fit and resume operations
+        self._ensure_pause_callback(all_callbacks)
+        
         return all_callbacks
+    
+    def _ensure_pause_callback(self, callbacks: List[Callback]) -> None:
+        """Ensure PauseCallback is present in callbacks list for progress bar functionality."""
+        try:
+            from ..callbacks.pause import PauseCallback
+            
+            # Check if PauseCallback is already present
+            has_pause_callback = any(isinstance(cb, PauseCallback) for cb in callbacks)
+            
+            if not has_pause_callback:
+                # Create and add PauseCallback with sensible defaults
+                pause_callback = PauseCallback(
+                    checkpoint_dir='pause_checkpoints',
+                    enable_pause=True,
+                    pause_key='p',
+                    upload_key='w',
+                    debounce_interval=0.3,
+                    refresh_rate=1,
+                    bar_colour='#fcac17',  # Orange progress bars
+                    global_bar_metrics=['*lr*'],
+                    interval_bar_metrics=['loss', 'train/loss', 'train_loss'],  # Support all naming conventions
+                    logging_interval='step',
+                    show_pause_countdown=False  # Disabled by default to save screen space
+                )
+                
+                callbacks.append(pause_callback)
+                logger.info("✅ Automatically added PauseCallback for progress bar functionality")
+            
+        except ImportError as e:
+            logger.warning(f"Could not import PauseCallback: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to ensure PauseCallback: {e}")
     
     def _create_callback_from_config(self, callback_config: Dict[str, Any]) -> Optional[Callback]:
         """Create a callback from configuration."""
@@ -350,12 +512,18 @@ class LightningReflow:
     
     def _select_resume_strategy(self, resume_source: str) -> ResumeStrategy:
         """Select the appropriate resume strategy for the source."""
+        # Prioritize local path if it exists, as W&B artifacts can look like paths
+        if Path(resume_source).exists():
+            logger.info("Resume source is a local path, selecting LocalPathResumeStrategy")
+            return LocalPathResumeStrategy()
+        
         for strategy in self.resume_strategies:
             if strategy.validate_source(resume_source):
                 logger.info(f"Selected resume strategy: {strategy.__class__.__name__}")
                 return strategy
         
-        # Default to local path strategy
+        # Default to local path strategy if no specific strategy matches
+        # This can happen if the path does not exist yet (e.g. will be created by another process)
         logger.info("No specific strategy matched, defaulting to LocalPathResumeStrategy")
         return LocalPathResumeStrategy()
     

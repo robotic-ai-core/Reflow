@@ -6,7 +6,7 @@ This strategy handles resuming from checkpoint files stored on the local filesys
 
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Tuple
 
 from .resume_strategy import ResumeStrategy
 
@@ -32,9 +32,14 @@ class LocalPathResumeStrategy(ResumeStrategy):
             True if it's a valid local path, False otherwise
         """
         try:
+            # Reject obvious W&B artifact patterns
+            if ':' in resume_source and '/' in resume_source:
+                # Pattern like "entity/project/artifact:version"
+                return False
+            
             path = Path(resume_source)
-            # Consider it a local path if it exists or if it's not a URL-like string
-            return path.exists() or not ('://' in resume_source and not resume_source.startswith('file://'))
+            # Consider it a local path if it exists or looks like a filesystem path
+            return path.exists() or path.suffix in ['.ckpt', '.pt', '.pth', '.pkl']
         except Exception:
             return False
     
@@ -42,44 +47,42 @@ class LocalPathResumeStrategy(ResumeStrategy):
         self, 
         resume_source: str, 
         **kwargs
-    ) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
+    ) -> Tuple[Optional[Path], Optional[str]]:
         """
         Prepare for resuming from a local checkpoint path.
         
         Args:
             resume_source: Local filesystem path to the checkpoint
-            **kwargs: Additional arguments (unused for local paths)
+            **kwargs: Additional arguments (ignored for local paths)
             
         Returns:
-            Tuple of (checkpoint_path, None) - no additional config for local paths
+            Tuple of (checkpoint_path, embedded_config_yaml)
             
         Raises:
-            ValueError: If the path doesn't exist or isn't a file
-            RuntimeError: If the checkpoint file is corrupted or unreadable
+            FileNotFoundError: If the checkpoint file doesn't exist
         """
         logger.info(f"Preparing to resume from local path: {resume_source}")
         
-        # Handle file:// URLs
-        if resume_source.startswith('file://'):
-            resume_source = resume_source[7:]  # Remove 'file://' prefix
-        
         checkpoint_path = Path(resume_source)
         
-        # Validate the path exists
         if not checkpoint_path.exists():
-            raise ValueError(f"Checkpoint path does not exist: {checkpoint_path}")
+            raise FileNotFoundError(f"Checkpoint path does not exist: {resume_source}")
         
         if not checkpoint_path.is_file():
-            raise ValueError(f"Checkpoint path is not a file: {checkpoint_path}")
+            raise ValueError(f"Checkpoint path is not a file: {resume_source}")
         
-        # Basic validation that it's a checkpoint file
-        if not self._is_valid_checkpoint(checkpoint_path):
-            raise RuntimeError(f"File does not appear to be a valid checkpoint: {checkpoint_path}")
+        # Extract embedded config from checkpoint as raw YAML string
+        from lightning_reflow.utils.checkpoint.checkpoint_utils import extract_embedded_config
+        embedded_config_yaml = extract_embedded_config(str(checkpoint_path))
         
-        logger.info(f"✅ Local checkpoint validated: {checkpoint_path}")
+        if embedded_config_yaml:
+            logger.info(f"📄 Found embedded configuration in checkpoint ({len(embedded_config_yaml)} chars)")
+        else:
+            logger.info("📄 No embedded configuration found in checkpoint")
         
-        # For local paths, we don't extract additional config
-        return checkpoint_path, None
+        logger.info(f"✅ Local checkpoint prepared for resumption: {checkpoint_path}")
+        
+        return checkpoint_path, embedded_config_yaml
     
     def _is_valid_checkpoint(self, checkpoint_path: Path) -> bool:
         """

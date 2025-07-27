@@ -1,14 +1,8 @@
 """
 Config embedding mixin for embedding configurations in checkpoints.
 
-This mixin provides functionality to embed resolved configurations in checkpoints:
-1. Embedding the resolved configuration (including CLI overrides)
-2. Config synthesis and validation
-3. W&B run ID storage
-4. Config hash validation
-
-This is separate from manager state operations and can be used by callbacks
-that need config persistence without triggering global manager state operations.
+This mixin provides functionality to embed Lightning's auto-generated config.yaml
+directly in checkpoints for reproducibility.
 """
 
 import time
@@ -28,10 +22,9 @@ class ConfigEmbeddingMixin:
     Mixin to add config embedding functionality to any checkpoint callback.
     
     This mixin provides:
-    - Embedded resolved configuration with CLI overrides
-    - Config synthesis and validation
-    - W&B run ID storage
+    - Direct embedding of Lightning's auto-generated config.yaml
     - Config hash validation
+    - W&B run ID storage
     
     Usage:
         class MyCheckpoint(ModelCheckpoint, ConfigEmbeddingMixin):
@@ -42,10 +35,9 @@ class ConfigEmbeddingMixin:
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._synthesized_config: Optional[str] = None
-        self._config_synthesis_attempted = False
         self._original_argv = sys.argv.copy()
         self._cli_config_validated = False
+        self._trainer_ref = None
     
     def _validate_cli_configuration(self, trainer: Trainer) -> None:
         """
@@ -86,9 +78,9 @@ class ConfigEmbeddingMixin:
         else:
             # No CLI context - this is a critical error for self-contained checkpoints
             raise RuntimeError(
-                "❌ CRITICAL: ConfigEmbeddingMixin requires DiffusionFlowLightningCLI context for self-contained checkpoints. "
+                "❌ CRITICAL: ConfigEmbeddingMixin requires LightningReflowCLI context for self-contained checkpoints. "
                 "This callback cannot create reproducible checkpoints without CLI-generated config.yaml. "
-                "Either use DiffusionFlowLightningCLI instead of raw PyTorch Lightning Trainer, "
+                "Either use LightningReflowCLI instead of raw PyTorch Lightning Trainer, "
                 "or remove ConfigEmbeddingMixin from callbacks that don't require config embedding."
             )
         
@@ -105,6 +97,9 @@ class ConfigEmbeddingMixin:
             checkpoint: Checkpoint dictionary to modify
             metadata_key: Key to store metadata under in checkpoint
         """
+        # Store trainer reference for config capture
+        self._trainer_ref = trainer
+        
         # Validate CLI configuration on first use
         self._validate_cli_configuration(trainer)
         metadata = checkpoint.get(metadata_key, {})
@@ -124,24 +119,24 @@ class ConfigEmbeddingMixin:
             metadata['wandb_run_id'] = wandb_run_id
             logger.info(f"📋 Storing W&B run ID in checkpoint: {wandb_run_id}")
         
-        # Embed resolved config - MANDATORY for reproducibility
-        resolved_config = self._capture_resolved_config(trainer)
-        if not resolved_config:
+        # Embed Lightning's config.yaml directly - MANDATORY for reproducibility
+        lightning_config = self._capture_lightning_config()
+        if not lightning_config:
             error_msg = (
-                "❌ CRITICAL: Failed to capture CLI configuration with overrides. "
-                "Cannot create reproducible checkpoint without resolved config. "
-                "CLI reference may not be stored in trainer or config synthesis failed."
+                "❌ CRITICAL: Failed to capture Lightning's auto-generated config.yaml. "
+                "Cannot create reproducible checkpoint without embedded config. "
+                "Lightning should have created config.yaml automatically."
             )
             logger.error(error_msg)
             raise RuntimeError(
-                "CLI config capture failed - cannot guarantee reproducible checkpoint. "
-                "Check that trainer.cli is properly set and accessible."
+                "Lightning config capture failed - cannot guarantee reproducible checkpoint. "
+                "Check that Lightning's config.yaml exists and is readable."
             )
         
-        metadata['embedded_config_content'] = resolved_config
-        metadata['config_hash'] = self._calculate_config_hash(resolved_config)
-        metadata['config_source'] = 'resolved_with_overrides'
-        logger.info(f"📝 Embedded resolved config with CLI overrides ({len(resolved_config)} chars)")
+        metadata['embedded_config_content'] = lightning_config
+        metadata['config_hash'] = self._calculate_config_hash(lightning_config)
+        metadata['config_source'] = 'lightning_auto_generated'
+        logger.info(f"📝 Embedded Lightning's auto-generated config.yaml ({len(lightning_config)} chars)")
         
         checkpoint[metadata_key] = metadata
     
@@ -166,126 +161,48 @@ class ConfigEmbeddingMixin:
         # Config metadata is automatically available in checkpoint
         # No specific restoration needed for config content
     
-    def _synthesize_resolved_config(self, trainer: Trainer, context: str = "checkpoint save") -> bool:
+    def _capture_lightning_config(self) -> Optional[str]:
         """
-        Get the resolved configuration using Lightning's auto-generated config.yaml file.
+        Capture Lightning's configuration with config.yaml file as primary source.
         
         Returns:
-            bool: True if config retrieval succeeded
+            YAML string of Lightning's config, or None if not available
         """
-        if self._synthesized_config is not None:
-            return True
-            
-        if self._config_synthesis_attempted:
-            return self._synthesized_config is not None
-            
-        self._config_synthesis_attempted = True
-        
         try:
-            # Use Lightning's auto-generated config.yaml file (guaranteed to exist)
-            logger.info(f"📄 Reading Lightning's auto-generated config.yaml for {context}")
-            
-            # Lightning CLI automatically saves config.yaml in current directory
+            # Primary: Try to read config.yaml file from current run
             config_path = Path("config.yaml")
-            
             if config_path.exists():
                 with open(config_path, 'r') as f:
-                    config_yaml = f.read()
+                    config_content = f.read()
                 
-                # Validate config content before accepting it
-                self._validate_config_content(config_yaml, context)
-                
-                self._synthesized_config = config_yaml
-                logger.info(f"✅ Using Lightning's auto-generated config.yaml for {context} ({len(config_yaml)} chars)")
-                return True
+                # Validate content is reasonable
+                if config_content.strip():
+                    logger.info("📋 Captured Lightning's config from config.yaml file (primary source)")
+                    return config_content
+                else:
+                    logger.warning("Lightning's config.yaml is empty, trying CLI context fallback")
             else:
-                # This should never happen unless config saving is disabled
-                error_msg = (
-                    f"Lightning config.yaml not found at {config_path.absolute()}. "
-                    "This file is required for self-contained checkpoints. "
-                    "Ensure DiffusionFlowLightningCLI is not initialized with save_config_kwargs=False."
-                )
-                logger.error(f"❌ CRITICAL: {error_msg}")
-                raise RuntimeError(error_msg)
-                
-        except RuntimeError:
-            # Re-raise RuntimeError to ensure proper configuration
-            raise
-        except PermissionError as e:
-            # Configuration error - should fail fast, not mask
-            error_msg = f"Cannot read Lightning config due to permissions: {e}. Check file permissions on {config_path.absolute()}"
-            logger.error(f"❌ CRITICAL: {error_msg}")
-            raise RuntimeError(error_msg)
-        except FileNotFoundError as e:
-            # Should be caught by exists() check above, but just in case
-            error_msg = f"Lightning config file disappeared during read: {e}"
-            logger.error(f"❌ CRITICAL: {error_msg}")
-            raise RuntimeError(error_msg)
-        except IOError as e:
-            # IO errors indicate serious system issues
-            error_msg = f"IO error reading Lightning config: {e}. Check disk space and file system health"
-            logger.error(f"❌ CRITICAL: {error_msg}")
-            raise RuntimeError(error_msg)
-        except Exception as e:
-            # Unknown errors should not be masked
-            error_msg = f"Unexpected error reading Lightning config: {e}"
-            logger.error(f"❌ CRITICAL: {error_msg}")
-            raise RuntimeError(error_msg)
-    
-    def _validate_config_content(self, config_yaml: str, context: str) -> None:
-        """
-        Validate that config content is reasonable and usable.
-        
-        Args:
-            config_yaml: The raw YAML content to validate
-            context: Context for error messages
+                logger.info(f"Lightning's config.yaml not found at {config_path.absolute()}, trying CLI context fallback")
             
-        Raises:
-            RuntimeError: If config content is invalid or unusable
-        """
-        # Check for empty content
-        if not config_yaml.strip():
-            raise RuntimeError(f"Lightning config file is empty at {context}. This indicates a serious configuration issue.")
-        
-        # Basic YAML syntax validation
-        try:
-            import yaml
-            parsed_config = yaml.safe_load(config_yaml)
+            # Fallback: Try to get from CLI context if config.yaml unavailable
+            if hasattr(self, '_trainer_ref') and self._trainer_ref and hasattr(self._trainer_ref, 'cli'):
+                cli = self._trainer_ref.cli
+                if hasattr(cli, 'config') and cli.config:
+                    import yaml
+                    # Convert the merged config to YAML string
+                    config_yaml = yaml.dump(cli.config, default_flow_style=False, sort_keys=False)
+                    logger.info("📋 Captured Lightning's merged config from CLI context (fallback)")
+                    return config_yaml
+                else:
+                    logger.warning("CLI context available but no config found")
+            else:
+                logger.warning("No CLI context available for config fallback")
+                
+            return None
+                
         except Exception as e:
-            raise RuntimeError(f"Lightning config contains invalid YAML at {context}: {e}")
-        
-        # Validate it's actually a config structure
-        if not isinstance(parsed_config, dict):
-            raise RuntimeError(f"Lightning config is not a valid configuration object at {context}")
-        
-        # Check for minimum required content that Lightning should always generate
-        required_sections = ['trainer', 'model', 'data']
-        if not any(section in parsed_config for section in required_sections):
-            raise RuntimeError(
-                f"Lightning config missing required sections at {context}. "
-                f"Expected at least one of: {required_sections}. "
-                f"Found sections: {list(parsed_config.keys())}"
-            )
-        
-        # Check reasonable file size (Lightning configs should not be tiny or huge)
-        config_size = len(config_yaml)
-        if config_size < 100:  # Less than 100 chars is suspicious
-            logger.warning(f"⚠️ Lightning config is unusually small ({config_size} chars) at {context}")
-        elif config_size > 10 * 1024 * 1024:  # More than 10MB is suspicious
-            logger.warning(f"⚠️ Lightning config is unusually large ({config_size} chars) at {context}")
-    
-    def _capture_resolved_config(self, trainer: Trainer) -> Optional[str]:
-        """
-        Capture the resolved configuration.
-        
-        Returns:
-            YAML string of the complete resolved configuration, or None if synthesis failed
-        """
-        # Try to synthesize if not done yet
-        if self._synthesized_config is None:
-            self._synthesize_resolved_config(trainer, context="config capture")
-        
-        return self._synthesized_config
+            logger.error(f"Failed to capture Lightning's config: {e}")
+            return None
     
     def _calculate_config_hash(self, config_content: str) -> str:
         """Calculate SHA256 hash of config content for validation."""

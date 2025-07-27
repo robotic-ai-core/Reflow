@@ -62,7 +62,7 @@ class WandbArtifactResumeStrategy(ResumeStrategy):
         project: Optional[str] = None,
         use_wandb_config: bool = False,
         **kwargs
-    ) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
+    ) -> Tuple[Optional[Path], Optional[str]]:
         """
         Prepare for resuming from a W&B artifact.
         
@@ -74,7 +74,7 @@ class WandbArtifactResumeStrategy(ResumeStrategy):
             **kwargs: Additional arguments
             
         Returns:
-            Tuple of (checkpoint_path, additional_config)
+            Tuple of (checkpoint_path, embedded_config_yaml)
             
         Raises:
             ValueError: If the artifact identifier is invalid
@@ -93,16 +93,69 @@ class WandbArtifactResumeStrategy(ResumeStrategy):
             # Find the checkpoint file in the downloaded artifact
             checkpoint_path = self._find_checkpoint_in_artifact(download_path)
             
-            # Optionally get config from W&B run
-            additional_config = None
-            if use_wandb_config:
-                additional_config = self._get_wandb_config(artifact_metadata)
+            # Extract embedded config from checkpoint as raw YAML string
+            from lightning_reflow.utils.checkpoint.checkpoint_utils import extract_embedded_config, extract_wandb_run_id, load_and_validate_checkpoint
+            embedded_config_yaml = extract_embedded_config(str(checkpoint_path))
+            
+            if embedded_config_yaml:
+                logger.info(f"📄 Found embedded configuration in checkpoint ({len(embedded_config_yaml)} chars)")
+                
+                # Parse the YAML temporarily to inject W&B run ID configuration
+                import yaml
+                try:
+                    config_dict = yaml.safe_load(embedded_config_yaml)
+                    
+                    # Extract W&B run ID from checkpoint for proper resume
+                    try:
+                        checkpoint_dict, _ = load_and_validate_checkpoint(str(checkpoint_path))
+                        wandb_run_id = extract_wandb_run_id(checkpoint_dict)
+                        
+                        # Also check in self_contained_metadata
+                        if not wandb_run_id and 'self_contained_metadata' in checkpoint_dict:
+                            wandb_run_id = checkpoint_dict['self_contained_metadata'].get('wandb_run_id')
+                        
+                        if wandb_run_id:
+                            logger.info(f"🔄 Found W&B run ID in checkpoint: {wandb_run_id}")
+                            
+                            # Inject W&B logger configuration into the config
+                            if 'trainer' not in config_dict:
+                                config_dict['trainer'] = {}
+                            
+                            # Configure the W&B logger with the run ID for resume
+                            config_dict['trainer']['logger'] = {
+                                'class_path': 'lightning.pytorch.loggers.WandbLogger',
+                                'init_args': {
+                                    'id': wandb_run_id,
+                                    'resume': 'must',
+                                    'project': artifact_metadata.get('project', 'VibeDiffusion')
+                                }
+                            }
+                            logger.info(f"✅ Configured W&B logger to resume run: {wandb_run_id}")
+                            
+                            # Convert back to YAML string
+                            embedded_config_yaml = yaml.dump(config_dict, default_flow_style=False, sort_keys=False)
+                        else:
+                            logger.warning("⚠️ No W&B run ID found in checkpoint - will create new run")
+                    except Exception as e:
+                        logger.warning(f"Failed to extract W&B run ID from checkpoint: {e}")
+                        
+                except yaml.YAMLError as e:
+                    logger.warning(f"Failed to parse embedded config YAML for W&B injection: {e}")
+            else:
+                logger.info("📄 No embedded configuration found in checkpoint")
+            
+            # Optionally override with config from W&B run (this path less common with embedded configs)
+            if use_wandb_config and not embedded_config_yaml:
+                import yaml
+                wandb_config = self._get_wandb_config(artifact_metadata)
+                if wandb_config:
+                    embedded_config_yaml = yaml.dump(wandb_config, default_flow_style=False, sort_keys=False)
             
             logger.info(f"✅ W&B artifact prepared for resumption")
             logger.info(f"   Checkpoint: {checkpoint_path}")
             logger.info(f"   Artifact: {artifact_metadata['name']}:{artifact_metadata['version']}")
             
-            return checkpoint_path, additional_config
+            return checkpoint_path, embedded_config_yaml
             
         except Exception as e:
             logger.error(f"Failed to prepare W&B artifact resume: {e}")

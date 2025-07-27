@@ -14,6 +14,34 @@ from ..monitoring.flow_progress_bar_callback import FlowProgressBarCallback
 from ...utils.wandb.wandb_artifact_manager import WandbArtifactManager
 
 class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
+    """
+    Interactive pause callback with production-grade validation boundary pausing.
+    
+    Features:
+    - Interactive pause via keyboard (default: 'p' key)
+    - Optional W&B upload during pause (default: 'w' key)  
+    - Validation boundary pausing for robustness
+    - Production-grade error handling and fallbacks
+    - Configurable progress bar pause countdown (disabled by default)
+    
+    Args:
+        checkpoint_dir: Directory for pause checkpoints
+        enable_pause: Enable interactive pause functionality
+        pause_key: Key to trigger pause (default: 'p')
+        upload_key: Key to toggle W&B upload (default: 'w')
+        show_pause_countdown: Show "⏸️ Pause in: X steps" on progress bar (default: False)
+        ... (other FlowProgressBarCallback args)
+    
+    Example:
+        # Default usage (countdown disabled to save screen space)
+        callback = PauseCallback(checkpoint_dir="my_checkpoints")
+        
+        # Enable countdown display if desired
+        callback = PauseCallback(
+            checkpoint_dir="my_checkpoints", 
+            show_pause_countdown=True
+        )
+    """
     def __init__(
         self,
         checkpoint_dir: str = "pause_checkpoints",
@@ -28,6 +56,7 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         logging_interval: str = "step",
         enable_pause_context_management: bool = True,
         skip_dependency_check: bool = False,  # Added for test compatibility
+        show_pause_countdown: bool = False,  # Disable pause countdown by default to save screen space
     ):
         super().__init__(
             refresh_rate=refresh_rate,
@@ -44,6 +73,7 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         self.upload_key = upload_key
         self.debounce_interval = debounce_interval
         self.enable_pause_context_management = enable_pause_context_management
+        self.show_pause_countdown = show_pause_countdown
         
         # State management
         self._state_machine = PauseStateMachine()
@@ -113,13 +143,88 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
 
     def on_validation_end(self, trainer: Trainer, pl_module: LightningModule):
         super().on_validation_end(trainer, pl_module)
-        # Only execute pause if training has actually progressed (not during sanity validation)
-        # and if debug hooks are not enabled (for testing purposes)
-        if (self._state_machine.is_pause_scheduled() and 
-            trainer.global_step > 0 and 
-            not self._debug_hooks_enabled):
-            # Always use validation boundary pause for consistency and robustness
-            self._execute_validation_boundary_pause(trainer, pl_module)
+        
+        # Production-grade validation boundary pause with comprehensive safety checks
+        try:
+            self._execute_validation_boundary_pause_if_needed(trainer, pl_module)
+        except Exception as e:
+            # Critical: Never let pause logic crash training
+            print(f"❌ CRITICAL: Validation boundary pause failed: {e}")
+            print(f"   Training will continue without pause. Please investigate.")
+            # Reset pause state to prevent repeated failures
+            self._state_machine.reset()
+            
+    def _execute_validation_boundary_pause_if_needed(self, trainer: Trainer, pl_module: LightningModule):
+        """Execute validation boundary pause with comprehensive production safety checks."""
+        
+        # Safety check 1: Must have pause scheduled
+        if not self._state_machine.is_pause_scheduled():
+            return
+            
+        # Safety check 2: Skip during debug mode (for testing)
+        if self._debug_hooks_enabled:
+            return
+            
+        # Safety check 3: Skip during sanity validation (global_step == 0)
+        if trainer.global_step <= 0:
+            print(f"🔄 Pause scheduled but skipping during sanity validation (global_step={trainer.global_step})")
+            return
+            
+        # Safety check 4: Verify trainer state is valid for checkpointing
+        if not self._validate_trainer_state_for_pause(trainer, pl_module):
+            print(f"❌ Trainer state invalid for pause - skipping pause at validation boundary")
+            # Reset pause state to prevent repeated validation failures
+            self._state_machine.reset()
+            return
+            
+        # Safety check 5: Verify training is actually active (not finished/stopping)
+        if hasattr(trainer, 'interrupted') and trainer.interrupted:
+            print(f"🔄 Training already interrupted - skipping pause execution")
+            return
+            
+        if hasattr(trainer, 'should_stop') and trainer.should_stop:
+            print(f"🔄 Training should_stop=True - skipping pause execution")
+            return
+        
+        print(f"🔄 Executing pause at validation boundary (global_step={trainer.global_step}, epoch={trainer.current_epoch})")
+        
+        # Execute the actual pause
+        self._execute_validation_boundary_pause(trainer, pl_module)
+        
+    def _validate_trainer_state_for_pause(self, trainer: Trainer, pl_module: LightningModule) -> bool:
+        """Validate that trainer and module state is safe for pause checkpoint creation."""
+        
+        # Check trainer has required attributes for checkpointing
+        required_trainer_attrs = ['global_step', 'current_epoch', 'logger']
+        for attr in required_trainer_attrs:
+            if not hasattr(trainer, attr):
+                print(f"❌ Trainer missing required attribute for pause: {attr}")
+                return False
+                
+        # Check pl_module is valid
+        if pl_module is None:
+            print(f"❌ LightningModule is None - cannot create pause checkpoint")
+            return False
+            
+        # Check checkpoint directory is accessible
+        try:
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            print(f"❌ Cannot access checkpoint directory {self.checkpoint_dir}: {e}")
+            return False
+            
+        # Check we have disk space (basic check)
+        try:
+            import shutil
+            free_space = shutil.disk_usage(self.checkpoint_dir).free
+            if free_space < 100 * 1024 * 1024:  # Less than 100MB
+                print(f"❌ Low disk space for pause checkpoint: {free_space / (1024*1024):.1f} MB")
+                return False
+        except Exception as e:
+            print(f"⚠️ Could not check disk space: {e}")
+            # Continue anyway - disk space check is optional
+            
+        return True
             
     def _is_end_of_epoch_validation(self, trainer: Trainer) -> bool:
         """Check if this validation is happening at the end of an epoch."""
@@ -271,27 +376,146 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         self._state_machine.reset()
 
     def _execute_validation_boundary_pause(self, trainer: Trainer, pl_module: LightningModule):
-        should_upload = self._state_machine.is_upload_requested()
-        checkpoint_path = self._get_checkpoint_path(trainer, upload=should_upload)
-        self._save_checkpoint(trainer, pl_module, checkpoint_path)
+        """Execute pause at validation boundary with production-grade error handling."""
         
-        # Handle upload and print resume commands with proper error handling
+        should_upload = self._state_machine.is_upload_requested()
+        checkpoint_path = None
         artifact_path = None
-        if should_upload:
-            try:
-                artifact_path = self._handle_wandb_upload(trainer, pl_module, str(checkpoint_path))
-            except (ValueError, RuntimeError) as e:
-                print(f"⚠️  Upload failed but pause will continue: {e}")
-                artifact_path = None
         
         try:
-            self._print_resume_commands(trainer, str(checkpoint_path), artifact_path)
-        except ValueError as e:
-            print(f"⚠️  Could not generate resume commands: {e}")
-            print(f"💾 Checkpoint saved at: {checkpoint_path}")
+            # Step 1: Generate checkpoint path (fail fast if issues)
+            checkpoint_path = self._get_checkpoint_path(trainer, upload=should_upload)
+            print(f"💾 Creating pause checkpoint at: {checkpoint_path}")
+            
+            # Step 2: Save checkpoint (critical operation)
+            self._save_checkpoint_with_validation(trainer, pl_module, checkpoint_path)
+            print(f"✅ Pause checkpoint saved successfully")
+            
+            # Step 3: Handle upload (optional operation - should not fail pause)
+            if should_upload:
+                artifact_path = self._handle_upload_with_fallback(trainer, pl_module, str(checkpoint_path))
+            
+            # Step 4: Print resume commands (informational - should not fail pause)
+            self._print_resume_commands_with_fallback(trainer, str(checkpoint_path), artifact_path)
+            
+            # Step 5: Set trainer stop and reset state
+            trainer.should_stop = True
+            self._state_machine.reset()
+            
+            print(f"🔄 Training paused successfully at validation boundary")
+            
+        except Exception as e:
+            # Critical failure handling
+            print(f"❌ CRITICAL: Pause execution failed: {e}")
+            
+            # Try to clean up partial checkpoint if it exists
+            if checkpoint_path and checkpoint_path.exists():
+                try:
+                    checkpoint_path.unlink()
+                    print(f"🧹 Cleaned up partial checkpoint: {checkpoint_path}")
+                except Exception as cleanup_error:
+                    print(f"⚠️ Could not clean up partial checkpoint: {cleanup_error}")
+            
+            # Reset state to prevent repeated failures
+            self._state_machine.reset()
+            
+            # Re-raise to trigger the outer exception handler
+            raise
+            
+    def _save_checkpoint_with_validation(self, trainer: Trainer, pl_module: LightningModule, checkpoint_path: Path):
+        """Save checkpoint with validation and atomic operation."""
         
-        trainer.should_stop = True
-        self._state_machine.reset()
+        # Create temporary checkpoint path for atomic operation
+        temp_checkpoint_path = checkpoint_path.with_suffix('.tmp')
+        
+        try:
+            # Save to temporary file first
+            trainer.save_checkpoint(temp_checkpoint_path)
+            
+            # Validate the checkpoint was created and is readable
+            if not temp_checkpoint_path.exists():
+                raise RuntimeError(f"Checkpoint was not created at {temp_checkpoint_path}")
+                
+            checkpoint_size = temp_checkpoint_path.stat().st_size
+            if checkpoint_size < 1024:  # Less than 1KB is suspicious
+                raise RuntimeError(f"Checkpoint file too small ({checkpoint_size} bytes) - likely corrupted")
+            
+            # Try to load and validate the checkpoint structure
+            try:
+                checkpoint_dict = torch.load(temp_checkpoint_path, map_location='cpu', weights_only=False)
+                required_keys = ['state_dict', 'epoch', 'global_step']
+                missing_keys = [key for key in required_keys if key not in checkpoint_dict]
+                if missing_keys:
+                    raise RuntimeError(f"Checkpoint missing required keys: {missing_keys}")
+            except Exception as e:
+                raise RuntimeError(f"Checkpoint validation failed: {e}")
+            
+            # Add config metadata if the mixin is available
+            try:
+                # Load the saved checkpoint to add metadata
+                checkpoint = torch.load(temp_checkpoint_path, map_location='cpu', weights_only=False)
+                
+                # Add config metadata using the mixin
+                self.add_config_metadata(trainer, pl_module, checkpoint)
+                
+                # Save back to temporary file
+                torch.save(checkpoint, temp_checkpoint_path)
+                print(f"✅ Added config metadata to pause checkpoint")
+                
+            except Exception as e:
+                print(f"⚠️ Could not add config metadata to checkpoint: {e}")
+                # Continue without metadata - not critical for pause functionality
+            
+            # Atomic move from temporary to final location
+            temp_checkpoint_path.rename(checkpoint_path)
+            print(f"✅ Checkpoint atomically saved to {checkpoint_path} ({checkpoint_size:,} bytes)")
+            
+        except Exception as e:
+            # Clean up temporary file on any failure
+            if temp_checkpoint_path.exists():
+                try:
+                    temp_checkpoint_path.unlink()
+                except Exception:
+                    pass
+            raise RuntimeError(f"Failed to save pause checkpoint: {e}")
+            
+    def _handle_upload_with_fallback(self, trainer: Trainer, pl_module: LightningModule, checkpoint_path: str) -> Optional[str]:
+        """Handle W&B upload with comprehensive fallback."""
+        
+        try:
+            artifact_path = self._handle_wandb_upload(trainer, pl_module, checkpoint_path)
+            if artifact_path:
+                print(f"✅ Pause checkpoint uploaded to W&B: {artifact_path}")
+                return artifact_path
+            else:
+                print(f"⚠️ W&B upload returned None - checkpoint saved locally only")
+                return None
+                
+        except (ValueError, RuntimeError) as e:
+            print(f"⚠️ W&B upload failed but pause will continue: {e}")
+            print(f"💾 Checkpoint available locally at: {checkpoint_path}")
+            return None
+        except Exception as e:
+            print(f"❌ Unexpected error during W&B upload: {e}")
+            print(f"💾 Checkpoint available locally at: {checkpoint_path}")
+            return None
+            
+    def _print_resume_commands_with_fallback(self, trainer: Trainer, checkpoint_path: str, artifact_path: Optional[str] = None):
+        """Print resume commands with fallback for errors."""
+        
+        try:
+            self._print_resume_commands(trainer, checkpoint_path, artifact_path)
+        except ValueError as e:
+            print(f"⚠️ Could not generate resume commands: {e}")
+            # Provide basic fallback information
+            print(f"💾 Checkpoint saved at: {checkpoint_path}")
+            if artifact_path:
+                print(f"☁️ W&B artifact: {artifact_path}")
+            print(f"📝 Use standard Lightning resume: --ckpt_path {checkpoint_path}")
+        except Exception as e:
+            print(f"❌ Unexpected error generating resume commands: {e}")
+            print(f"💾 Checkpoint saved at: {checkpoint_path}")
+            print(f"📝 Manually resume with: --ckpt_path {checkpoint_path}")
             
     def _upload_pause_checkpoint_artifact(self, wandb_callback, trainer: Trainer, checkpoint_path: str) -> Optional[str]:
         """
@@ -526,8 +750,10 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         # Get the base postfix with metrics
         base_postfix = self._format_metrics_postfix(self._interval_metrics)
         
-        # Add steps until next validation if pause is scheduled
-        if self._state_machine.is_pause_scheduled() and self._trainer:
+        # Add steps until next validation if pause is scheduled AND countdown is enabled
+        if (self._state_machine.is_pause_scheduled() and 
+            self._trainer and 
+            self.show_pause_countdown):
             # Import the method from parent if needed
             if hasattr(super(), '_get_steps_until_next_validation'):
                 steps_until_val = super()._get_steps_until_next_validation(self._trainer, self._current_batch_idx or 0)

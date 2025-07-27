@@ -6,7 +6,8 @@ handling command-line argument parsing and translating them to method calls.
 """
 
 import logging
-from typing import Optional, Dict, Any, List
+import subprocess
+import sys
 from lightning.pytorch.cli import LightningCLI
 
 from ..core import LightningReflow
@@ -22,37 +23,140 @@ class LightningReflowCLI(LightningCLI):
     like pause/resume, W&B integration, and sophisticated configuration management.
     
     It acts as a thin wrapper around the core LightningReflow class, parsing
-    command-line arguments and translating them to the appropriate method calls.
+    command-line arguments and translating them to method calls.
     """
     
     def __init__(self, *args, **kwargs):
         """
         Initialize the Lightning Reflow CLI.
         
-        This sets up argument parsing and handles the special 'resume' subcommand
-        that doesn't exist in the base Lightning CLI.
+        For resume commands, spawns a new subprocess with the fit command.
         """
         logger.info("🎯 Initializing Lightning Reflow CLI")
         
-        # Check if this is a resume command before Lightning CLI processes it
+        # Handle resume command by spawning subprocess with fit command
         if self._is_resume_command():
-            self._handle_resume_command()
+            self._execute_resume_as_subprocess()
             return
         
         # Initialize the Lightning CLI for standard commands (fit, validate, test, predict)
         super().__init__(*args, **kwargs)
+    
+    def before_fit(self) -> None:
+        """
+        Hook called before fit starts.
+        
+        This ensures the progress bar functionality is always available.
+        """
+        # Ensure StepOutputLoggerCallback is added first for metrics logging
+        self._ensure_step_output_logger()
+        # Then ensure PauseCallback is added for progress bar functionality
+        self._ensure_pause_callback()
+    
+    def _ensure_pause_callback(self) -> None:
+        """Ensure PauseCallback is in the trainer callbacks for progress bar functionality."""
+        from ..callbacks.pause import PauseCallback
+        
+        # Check if we have a trainer
+        if not hasattr(self, 'trainer') or not self.trainer:
+            return
+            
+        # Check if PauseCallback is already present
+        has_pause_callback = any(
+            isinstance(cb, PauseCallback) for cb in self.trainer.callbacks
+        )
+        
+        if not has_pause_callback:
+            # Create and add PauseCallback
+            pause_callback = PauseCallback(
+                checkpoint_dir='pause_checkpoints',
+                enable_pause=True,
+                pause_key='p',
+                upload_key='w',
+                debounce_interval=0.3,
+                refresh_rate=1,
+                bar_colour='#fcac17',  # Orange progress bars
+                global_bar_metrics=['*lr*'],
+                interval_bar_metrics=['loss', 'train/loss', 'train_loss'],  # Support all naming conventions
+                logging_interval='step',
+            )
+            
+            # Add to trainer's callbacks
+            self.trainer.callbacks.append(pause_callback)
+            
+            logger.info("✅ Automatically added PauseCallback for progress bar functionality")
+    
+    def _ensure_step_output_logger(self) -> None:
+        """Ensure StepOutputLoggerCallback is present for metrics logging."""
+        from ..callbacks.logging import StepOutputLoggerCallback
+        
+        # Check if we have a trainer
+        if not hasattr(self, 'trainer') or not self.trainer:
+            return
+            
+        # Check if StepOutputLoggerCallback is already present
+        has_step_logger = any(
+            isinstance(cb, StepOutputLoggerCallback) for cb in self.trainer.callbacks
+        )
+        
+        if not has_step_logger:
+            # Create with sensible defaults
+            step_logger = StepOutputLoggerCallback(
+                train_prog_bar_metrics=['loss', 'train/loss'],  # Support both naming conventions
+                val_prog_bar_metrics=['val_loss', 'val/val_loss']  # Support both naming conventions
+            )
+            
+            # Add to trainer's callbacks
+            self.trainer.callbacks.append(step_logger)
+            
+            logger.info("✅ Automatically added StepOutputLoggerCallback for metrics logging")
+    
+    def instantiate_trainer(self, **kwargs):
+        """Override to set CLI reference in trainer for ConfigEmbeddingMixin compatibility."""
+        # Call parent implementation to create trainer
+        trainer = super().instantiate_trainer(**kwargs)
+        
+        # Store CLI reference for callbacks that need it (like ConfigEmbeddingMixin)
+        trainer.cli = self
+        logger.info("✅ Stored CLI reference in trainer for checkpoint compatibility")
+        
+        # Register TrainerConfigState manager for systematic config preservation
+        self._register_trainer_config_state(trainer)
+        
+        return trainer
+    
+    def _register_trainer_config_state(self, trainer):
+        """Register TrainerConfigState manager for systematic trainer config preservation."""
+        try:
+            from modules.utils.checkpoint.manager_state import register_manager
+            from modules.utils.checkpoint.trainer_config_state import TrainerConfigState
+            from modules.utils.checkpoint.datamodule_state import DataModuleState
+            
+            # Create and register trainer config state manager
+            trainer_config_state = TrainerConfigState(trainer)
+            register_manager(trainer_config_state)
+            
+            # Create and register datamodule state manager
+            datamodule_state = DataModuleState(trainer)
+            register_manager(datamodule_state)
+            
+            logger.info("✅ Registered TrainerConfigState and DataModuleState managers for systematic state preservation")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to register state managers: {e}")
     
     def _is_resume_command(self) -> bool:
         """Check if the command is a resume command."""
         import sys
         return len(sys.argv) > 1 and sys.argv[1] == 'resume'
     
-    def _handle_resume_command(self) -> None:
-        """Handle the resume subcommand."""
+    def _execute_resume_as_subprocess(self) -> None:
+        """Execute resume command by spawning a subprocess with fit command."""
         import argparse
-        import sys
+        import tempfile
+        import yaml
+        import os
         
-        # Create argument parser for resume command
+        # Parse resume arguments first
         parser = argparse.ArgumentParser(
             prog="lightning-reflow resume",
             description="Resume Lightning Reflow training from a checkpoint"
@@ -95,9 +199,9 @@ class LightningReflowCLI(LightningCLI):
         )
         
         # Parse resume arguments (skip 'resume' subcommand)
-        args = parser.parse_args(sys.argv[2:])
+        args, unknown_args = parser.parse_known_args(sys.argv[2:])
         
-        # Determine resume source
+        # Validate arguments
         if args.checkpoint_path and args.checkpoint_artifact:
             parser.error("Cannot specify both --checkpoint-path and --checkpoint-artifact")
         
@@ -106,29 +210,90 @@ class LightningReflowCLI(LightningCLI):
         
         resume_source = args.checkpoint_path or args.checkpoint_artifact
         
-        # Create LightningReflow instance
-        config_files = [args.config] if args.config else None
-        
-        reflow = LightningReflow(
-            config_files=config_files,
-            auto_configure_logging=True
-        )
-        
-        # Resume training
-        logger.info(f"Resuming training from: {resume_source}")
-        
         try:
-            result = reflow.resume(
+            # Create temporary LightningReflow to handle resume preparation
+            temp_reflow = LightningReflow(
+                config_files=[args.config] if args.config else None,
+                auto_configure_logging=False
+            )
+            
+            # Use resume strategy to prepare checkpoint and config
+            strategy = temp_reflow._select_resume_strategy(resume_source)
+            checkpoint_path, embedded_config_yaml = strategy.prepare_resume(
                 resume_source=resume_source,
                 use_wandb_config=args.use_wandb_config,
                 entity=args.entity,
                 project=args.project
             )
-            logger.info("✅ Resume completed successfully")
+            
+            logger.info(f"🔄 Preparing subprocess resume command")
+            logger.info(f"   Checkpoint: {checkpoint_path}")
+            
+            # Build command for subprocess
+            cmd = [sys.executable, sys.argv[0], 'fit']
+            
+            # Add original config if provided
+            if args.config:
+                cmd.extend(['--config', args.config])
+            
+            # Add checkpoint path
+            cmd.extend(['--ckpt_path', str(checkpoint_path)])
+            
+            # Handle embedded config from checkpoint
+            temp_config_path = None
+            if embedded_config_yaml:
+                # Write embedded config YAML string to temporary file
+                temp_config_fd, temp_config_path = tempfile.mkstemp(suffix='.yaml', prefix='resume_config_')
+                try:
+                    with os.fdopen(temp_config_fd, 'w') as f:
+                        f.write(embedded_config_yaml)
+                    
+                    # Add temp config as additional config file
+                    cmd.extend(['--config', temp_config_path])
+                    logger.info(f"📄 Using embedded config from checkpoint: {temp_config_path}")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to create temporary config file: {e}")
+                    if temp_config_path:
+                        os.unlink(temp_config_path)
+                        temp_config_path = None
+            else:
+                logger.info("📄 No embedded config found in checkpoint")
+            
+            # Pass through any additional Lightning CLI arguments
+            if unknown_args:
+                cmd.extend(unknown_args)
+                logger.info(f"🔧 Passing through additional arguments: {unknown_args}")
+            
+            logger.info(f"🚀 Executing: {' '.join(cmd)}")
+            
+            # Execute the fit command in subprocess
+            try:
+                result = subprocess.run(cmd, check=True)
+                sys.exit(result.returncode)
+            except subprocess.CalledProcessError as e:
+                logger.error(f"❌ Subprocess failed with return code {e.returncode}")
+                sys.exit(e.returncode)
+            finally:
+                # Cleanup temporary config file
+                if temp_config_path and os.path.exists(temp_config_path):
+                    try:
+                        os.unlink(temp_config_path)
+                        logger.info(f"🗑️ Cleaned up temporary config: {temp_config_path}")
+                    except Exception:
+                        pass
+                
+                # Cleanup temp reflow strategies
+                try:
+                    temp_reflow._cleanup_strategies()
+                    logger.info(f"🗑️ Cleaned up temporary reflow strategies")
+                except Exception:
+                    pass
             
         except Exception as e:
-            logger.error(f"❌ Resume failed: {e}")
+            logger.error(f"❌ Failed to execute resume command: {e}")
             sys.exit(1)
+    
     
     def add_arguments_to_parser(self, parser) -> None:
         """Add Lightning Reflow specific arguments to the parser."""

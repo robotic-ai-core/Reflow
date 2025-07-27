@@ -64,43 +64,13 @@ def save_comprehensive_checkpoint(
     # Store under a standard key
     checkpoint['diffusion_flow_checkpoint_metadata'] = checkpoint_metadata
     
-    # Fix epoch progress state to prevent resume issues (SAFE - only removes problematic state)
-    fix_epoch_progress_state(checkpoint, trainer)
+    # Note: fix_epoch_progress_state was removed as it's no longer needed with modern PyTorch Lightning
+    # Modern Lightning handles epoch progress correctly during checkpoint resumption
     
     # Save enhanced checkpoint
     torch.save(checkpoint, checkpoint_path)
 
 
-
-def fix_epoch_progress_state(checkpoint: Dict[str, Any], trainer: "pl.Trainer") -> None:
-    """
-    Fix epoch progress state to prevent Lightning from thinking training is complete.
-    
-    This is a conservative fix that only removes potentially problematic epoch_progress
-    state and lets Lightning reinitialize it cleanly. This matches the original
-    working implementation.
-    
-    Args:
-        checkpoint: The checkpoint dictionary to modify
-        trainer: PyTorch Lightning trainer for context
-    """
-    try:
-        # Access the epoch loop state
-        if 'loops' in checkpoint and 'fit_loop' in checkpoint['loops']:
-            fit_loop_state = checkpoint['loops']['fit_loop']
-            current_epoch = trainer.current_epoch
-            
-            # The safest approach: remove the epoch_progress entirely and let Lightning reinitialize it
-            # This prevents any confusion about where we are in the training process
-            if 'epoch_progress' in fit_loop_state:
-                original_progress = fit_loop_state['epoch_progress'].copy()
-                del fit_loop_state['epoch_progress']
-                print(f"[INFO] Removed epoch_progress state to prevent early termination")
-                print(f"       Original progress: {original_progress}")
-                print(f"       Lightning will reinitialize epoch progress for epoch {current_epoch}")
-                
-    except Exception as e:
-        print(f"[WARNING] Could not fix epoch progress state: {e}")
 
 
 def validate_checkpoint_structure(checkpoint: Dict[str, Any], checkpoint_path: str) -> Dict[str, Any]:
@@ -191,6 +161,14 @@ def extract_wandb_run_id(checkpoint: Dict[str, Any]) -> Optional[str]:
     Returns:
         W&B run ID if found, None otherwise
     """
+    # Check self_contained_metadata (modern format)
+    if 'self_contained_metadata' in checkpoint:
+        metadata = checkpoint['self_contained_metadata']
+        if 'wandb_run_id' in metadata:
+            run_id = metadata['wandb_run_id']
+            if isinstance(run_id, str) and run_id.strip():
+                return run_id.strip()
+    
     # Check current PauseCallback metadata format
     if 'pause_callback_metadata' in checkpoint:
         pause_metadata = checkpoint['pause_callback_metadata']
@@ -266,6 +244,51 @@ def load_and_validate_checkpoint(checkpoint_path: str) -> tuple[Dict[str, Any], 
         return checkpoint, metadata
     except Exception as e:
         raise ValueError(f"Failed to load checkpoint from {checkpoint_path}: {e}")
+
+
+def extract_embedded_config(checkpoint_path: str) -> Optional[str]:
+    """
+    Extract embedded configuration YAML from a checkpoint.
+    
+    Searches all known metadata locations for embedded config content.
+    
+    Args:
+        checkpoint_path: Path to the checkpoint file
+        
+    Returns:
+        YAML configuration string if found, None otherwise
+    """
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        
+        # Check all known metadata locations
+        metadata_locations = [
+            'self_contained_metadata',  # ConfigEmbeddingMixin standard location
+            'pause_callback_metadata',  # PauseCallback metadata
+            'wandb_artifact_checkpoint_metadata',  # WandbArtifactCheckpoint metadata
+            'checkpoint_metadata',  # Generic metadata
+            'model_checkpoint_metadata',  # ModelCheckpoint metadata
+        ]
+        
+        for location in metadata_locations:
+            if location in checkpoint:
+                metadata = checkpoint[location]
+                if isinstance(metadata, dict) and 'embedded_config_content' in metadata:
+                    config_content = metadata['embedded_config_content']
+                    if config_content:
+                        print(f"[INFO] Found embedded config in {location}")
+                        return config_content
+        
+        # Check top-level for legacy format
+        if 'embedded_config_content' in checkpoint:
+            print("[INFO] Found embedded config at top level (legacy format)")
+            return checkpoint['embedded_config_content']
+        
+        return None
+        
+    except Exception as e:
+        print(f"[WARNING] Failed to extract embedded config from {checkpoint_path}: {e}")
+        return None
 
 
 def standardize_checkpoint_directory_structure(

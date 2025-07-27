@@ -70,3 +70,143 @@ class ConfigSynthesizer:
             if self.verbose:
                 self.logger.error(f"❌ Exception during config capture: {e}")
             return None
+
+
+def convert_config_dict_to_dataclasses(config_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convert a configuration dictionary to use proper dataclass instances.
+    
+    This is needed when loading from embedded YAML configs where everything
+    is deserialized as dictionaries, but the model expects dataclass instances.
+    
+    Args:
+        config_dict: Configuration dictionary with nested structure
+        
+    Returns:
+        Modified configuration with dataclass instances where appropriate
+    """
+    # Import config classes lazily to avoid circular imports
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        from modules.utils.config.config import (
+            GenerativeBackboneConfig, UNetConfig, OptimizerConfig, 
+            LoggingConfig, FlowMatchingProcessSamplerConfig, 
+            DiffusionProcessSamplerConfig, MultiModalEncoderConfig,
+            ModalityEncoderConfig, EmbeddingAdaptorConfig, ODESolverConfig
+        )
+    except ImportError:
+        logger = get_logger(__name__)
+        logger.warning("Could not import config classes from modules.utils.config")
+        return config_dict
+    
+    converted_config = config_dict.copy()
+    
+    # Convert backbone config
+    if 'backbone' in converted_config and isinstance(converted_config['backbone'], dict):
+        backbone_dict = converted_config['backbone']
+        backbone_type = backbone_dict.get('type', 'unet')
+        init_args = backbone_dict.get('init_args', {})
+        
+        # Convert init_args to proper config type
+        if backbone_type == 'unet' and isinstance(init_args, dict):
+            init_args = UNetConfig(**init_args)
+        
+        converted_config['backbone'] = GenerativeBackboneConfig(
+            type=backbone_type,
+            init_args=init_args
+        )
+    
+    # Convert optimizer config
+    if 'optimizer' in converted_config and isinstance(converted_config['optimizer'], dict):
+        try:
+            converted_config['optimizer'] = OptimizerConfig(**converted_config['optimizer'])
+        except Exception as e:
+            logger.warning(f"Failed to convert optimizer config: {e}")
+    
+    # Convert logging config
+    if 'logging' in converted_config and isinstance(converted_config['logging'], dict):
+        try:
+            converted_config['logging'] = LoggingConfig(**converted_config['logging'])
+        except Exception as e:
+            logger.warning(f"Failed to convert logging config: {e}")
+    
+    # Convert backbone config
+    if 'backbone' in converted_config and isinstance(converted_config['backbone'], dict):
+        try:
+            from modules.utils.config.config import GenerativeBackboneConfig, UNetConfig
+            backbone_dict = converted_config['backbone']
+            backbone_type = backbone_dict.get('type', 'unet')
+            
+            if backbone_type == 'unet':
+                init_args = backbone_dict.get('init_args', {})
+                if isinstance(init_args, dict):
+                    unet_config = UNetConfig(**init_args)
+                else:
+                    unet_config = init_args
+                
+                converted_config['backbone'] = GenerativeBackboneConfig(
+                    type=backbone_type,
+                    init_args=unet_config
+                )
+            else:
+                # For other backbone types, create with the existing structure
+                converted_config['backbone'] = GenerativeBackboneConfig(**backbone_dict)
+        except Exception as e:
+            logger.warning(f"Failed to convert backbone config: {e}")
+
+    # Convert process_sampler config with proper nested handling
+    if 'process_sampler' in converted_config and isinstance(converted_config['process_sampler'], dict):
+        try:
+            sampler_dict = converted_config['process_sampler']
+            sampler_type = sampler_dict.get('type', 'flow_matching')
+            
+            if sampler_type == 'flow_matching':
+                # Handle nested ode_solver properly
+                ode_solver_dict = sampler_dict.get('ode_solver', {})
+                if isinstance(ode_solver_dict, dict):
+                    ode_solver_config = ODESolverConfig(**ode_solver_dict)
+                else:
+                    ode_solver_config = ode_solver_dict
+                
+                converted_config['process_sampler'] = FlowMatchingProcessSamplerConfig(
+                    type=sampler_dict.get('type', 'flow_matching'),
+                    path_type=sampler_dict.get('path_type', 'linear'),
+                    ode_solver=ode_solver_config
+                )
+            elif sampler_type == 'diffusion':
+                converted_config['process_sampler'] = DiffusionProcessSamplerConfig(**sampler_dict)
+        except Exception as e:
+            logger.warning(f"Failed to convert process_sampler config: {e}")
+    
+    # Convert condition_encoder config
+    if 'condition_encoder' in converted_config and isinstance(converted_config['condition_encoder'], dict):
+        try:
+            encoder_dict = converted_config['condition_encoder']
+            encoder_type = encoder_dict.get('type')
+            
+            if encoder_type == 'multimodal':
+                converted_config['condition_encoder'] = MultiModalEncoderConfig(**encoder_dict)
+            elif encoder_type == 'pretrained_text':
+                # Import TextEncoderConfig for text encoders
+                try:
+                    from modules.utils.config.config import TextEncoderConfig
+                    converted_config['condition_encoder'] = TextEncoderConfig(**encoder_dict)
+                except ImportError:
+                    # Fallback - just use the dict
+                    logger.warning("TextEncoderConfig not available, keeping as dict")
+            elif encoder_type:
+                # For single modality encoders
+                converted_config['condition_encoder'] = ModalityEncoderConfig(**encoder_dict)
+        except Exception as e:
+            logger.warning(f"Failed to convert condition_encoder config: {e}")
+    
+    # Convert embedding_adaptor config  
+    if 'embedding_adaptor' in converted_config and isinstance(converted_config['embedding_adaptor'], dict):
+        try:
+            converted_config['embedding_adaptor'] = EmbeddingAdaptorConfig(**converted_config['embedding_adaptor'])
+        except Exception as e:
+            logger.warning(f"Failed to convert embedding_adaptor config: {e}")
+    
+    return converted_config

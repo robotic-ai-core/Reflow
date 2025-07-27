@@ -191,7 +191,7 @@ class TestErrorHandlingAndEdgeCases:
         reflow = LightningReflow(auto_configure_logging=False)
         
         # Should handle missing file gracefully
-        with pytest.raises(ValueError):  # LightningReflow raises ValueError for missing checkpoints
+        with pytest.raises(RuntimeError):  # W&B strategy raises RuntimeError for invalid artifacts
             reflow.resume(resume_source="/nonexistent/path.ckpt")
     
     def test_artifact_download_failure(self, temp_dir):

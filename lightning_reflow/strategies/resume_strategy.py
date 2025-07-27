@@ -5,7 +5,7 @@ This module defines the interface that all resume strategies must implement.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Tuple
 from pathlib import Path
 
 
@@ -22,7 +22,7 @@ class ResumeStrategy(ABC):
         self, 
         resume_source: str, 
         **kwargs
-    ) -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
+    ) -> Tuple[Optional[Path], Optional[str]]:
         """
         Prepare for resuming training from the given source.
         
@@ -31,9 +31,9 @@ class ResumeStrategy(ABC):
             **kwargs: Strategy-specific additional arguments
             
         Returns:
-            Tuple of (checkpoint_path, additional_config)
+            Tuple of (checkpoint_path, embedded_config_yaml)
             - checkpoint_path: Local path to the checkpoint file to resume from
-            - additional_config: Optional configuration overrides from the checkpoint
+            - embedded_config_yaml: Optional YAML string of embedded configuration
             
         Raises:
             ValueError: If the resume source is invalid
