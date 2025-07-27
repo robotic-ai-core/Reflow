@@ -7,11 +7,14 @@ configuration files for checkpoint embedding and resume functionality.
 
 import yaml
 import warnings
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, TYPE_CHECKING
 
 from lightning.pytorch import Trainer
 from lightning_reflow.utils.logging.logging_config import get_logger
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from lightning.pytorch.cli import LightningCLI
 
 
 def synthesize_config(trainer: Trainer, cli: "LightningCLI", verbose: bool = True, cli_config: Optional[Dict[str, Any]] = None) -> Optional[str]:

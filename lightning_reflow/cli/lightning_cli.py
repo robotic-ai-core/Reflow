@@ -79,6 +79,16 @@ class LightningReflowCLI(LightningCLI):
         # Initialize the Lightning CLI for standard commands (fit, validate, test, predict)
         super().__init__(*args, **kwargs)
     
+    def before_instantiate_classes(self) -> None:
+        """
+        Hook called BEFORE Lightning instantiates any classes.
+        
+        This is critical for setting environment variables like PYTORCH_CUDA_ALLOC_CONF
+        that MUST be set before CUDA/PyTorch initialization occurs.
+        """
+        logger.info("🔧 Processing environment variables (BEFORE instantiation)")
+        self._process_environment_callback_config()
+    
     def before_fit(self) -> None:
         """Hook called before fit starts - add essential callbacks."""
         self._add_essential_callbacks()
@@ -93,6 +103,9 @@ class LightningReflowCLI(LightningCLI):
     
     def _add_pause_callback(self) -> None:
         """Add PauseCallback if not already present."""
+        if not hasattr(self, 'trainer') or not self.trainer:
+            return
+            
         from ..callbacks.pause import PauseCallback
         
         has_pause_callback = any(isinstance(cb, PauseCallback) for cb in self.trainer.callbacks)
@@ -103,6 +116,9 @@ class LightningReflowCLI(LightningCLI):
     
     def _add_step_output_logger(self) -> None:
         """Add StepOutputLoggerCallback if not already present."""
+        if not hasattr(self, 'trainer') or not self.trainer:
+            return
+            
         from ..callbacks.logging import StepOutputLoggerCallback
         
         has_step_logger = any(isinstance(cb, StepOutputLoggerCallback) for cb in self.trainer.callbacks)
@@ -125,6 +141,60 @@ class LightningReflowCLI(LightningCLI):
         
         return trainer
     
+    def _process_environment_callback_config(self) -> None:
+        """
+        Process environment variables from config files EARLY before instantiation.
+        
+        This ensures variables like PYTORCH_CUDA_ALLOC_CONF are set before CUDA init.
+        """
+        try:
+            # Extract config paths from command line arguments
+            config_paths = self._extract_config_paths_from_sys_argv()
+            
+            if config_paths:
+                logger.info(f"📋 Processing environment variables from {len(config_paths)} config files")
+                
+                # Extract and set environment variables early
+                from ..utils.logging.environment_manager import EnvironmentManager
+                env_vars, processed_configs = EnvironmentManager.extract_environment_from_configs(config_paths)
+                
+                if env_vars:
+                    EnvironmentManager.set_environment_variables(env_vars, processed_configs)
+                    logger.info(f"✅ Set {len(env_vars)} environment variables EARLY (before instantiation)")
+                    
+                    # Log critical environment variables for debugging
+                    for var_name, value in env_vars.items():
+                        if any(keyword in var_name.upper() for keyword in ['CUDA', 'ALLOC', 'MALLOC', 'PYTORCH']):
+                            logger.info(f"   🎯 CRITICAL: {var_name}={value}")
+                        else:
+                            logger.debug(f"   {var_name}={value}")
+                else:
+                    logger.debug("No environment variables found in config files")
+            else:
+                logger.debug("No config files found for environment variable processing")
+                
+        except Exception as e:
+            logger.warning(f"Failed to process environment variables early: {e}")
+    
+    def _extract_config_paths_from_sys_argv(self) -> list:
+        """Extract config file paths from sys.argv for early processing."""
+        config_paths = []
+        i = 0
+        while i < len(sys.argv):
+            if sys.argv[i] == '--config' and i + 1 < len(sys.argv):
+                config_path = Path(sys.argv[i + 1])
+                if config_path.exists():
+                    config_paths.append(config_path)
+                i += 2
+            elif sys.argv[i].startswith('--config='):
+                config_path = Path(sys.argv[i].split('=', 1)[1])
+                if config_path.exists():
+                    config_paths.append(config_path)
+                i += 1
+            else:
+                i += 1
+        return config_paths
+
     def _register_trainer_config_state(self, trainer):
         """Register TrainerConfigState manager for systematic trainer config preservation."""
         try:

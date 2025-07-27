@@ -14,7 +14,10 @@ import sys
 import yaml
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..checkpoint.manager_state import EnvironmentManagerState
 
 logger = logging.getLogger(__name__)
 
@@ -66,14 +69,58 @@ class EnvironmentManager:
                 with open(config_path, 'r') as f:
                     config = yaml.safe_load(f)
                     
+                cleaned_config = config.copy() if config else {}
+                config_modified = False
+                
+                # Extract from top-level environment section
                 if config and 'environment' in config:
-                    # Extract and merge environment variables
                     environment_vars.update(config['environment'])
+                    del cleaned_config['environment']
+                    config_modified = True
+                
+                # Extract from EnvironmentCallback configurations
+                if config and 'trainer' in config and 'callbacks' in config['trainer']:
+                    callbacks = config['trainer']['callbacks']
+                    cleaned_callbacks = []
                     
-                    # Create cleaned config without environment section
-                    cleaned_config = {k: v for k, v in config.items() if k != 'environment'}
+                    for callback in callbacks:
+                        if isinstance(callback, dict):
+                            class_path = callback.get('class_path', '')
+                            if 'EnvironmentCallback' in class_path:
+                                # Extract environment variables from this callback
+                                init_args = callback.get('init_args', {})
+                                if 'env_vars' in init_args:
+                                    environment_vars.update(init_args['env_vars'])
+                                    
+                                # Remove env_vars from the callback config for cleaned version
+                                cleaned_callback = callback.copy()
+                                if 'init_args' in cleaned_callback:
+                                    cleaned_init_args = cleaned_callback['init_args'].copy()
+                                    if 'env_vars' in cleaned_init_args:
+                                        del cleaned_init_args['env_vars']
+                                        # Only keep the callback if it has other init_args
+                                        if cleaned_init_args:
+                                            cleaned_callback['init_args'] = cleaned_init_args
+                                            cleaned_callbacks.append(cleaned_callback)
+                                        # If no other init_args, skip this callback entirely
+                                        config_modified = True
+                                    else:
+                                        cleaned_callbacks.append(cleaned_callback)
+                                else:
+                                    # Keep callback without init_args
+                                    cleaned_callbacks.append(cleaned_callback)
+                            else:
+                                # Keep non-EnvironmentCallback callbacks as-is
+                                cleaned_callbacks.append(callback)
+                        else:
+                            # Keep non-dict callbacks as-is
+                            cleaned_callbacks.append(callback)
                     
-                    # Create temporary cleaned config file
+                    if config_modified:
+                        cleaned_config['trainer']['callbacks'] = cleaned_callbacks
+                
+                # Create temporary cleaned config file if modifications were made
+                if config_modified:
                     temp_config_path = config_path.with_suffix('.tmp' + config_path.suffix)
                     with open(temp_config_path, 'w') as f:
                         yaml.dump(cleaned_config, f, default_flow_style=False, sort_keys=False)
