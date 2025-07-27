@@ -400,7 +400,8 @@ class LightningReflowCLI(LightningCLI):
                     'class_path': 'lightning.pytorch.loggers.WandbLogger',
                     'init_args': {
                         'id': wandb_run_id,
-                        'resume': 'allow'
+                        'resume': 'allow',
+                        'log_model': False  # Don't log models by default during resume
                     }
                 }
                 wandb_config = {'trainer': {'logger': wandb_logger_config}}
