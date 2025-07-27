@@ -797,10 +797,16 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
             # For step-based validation
             val_interval = trainer.val_check_interval
             if isinstance(val_interval, int):
-                steps_since_last_val = trainer.global_step - self._last_validation_step
-                return val_interval - steps_since_last_val
+                # Convert to training batches for consistency
+                accumulate_grad_batches = getattr(trainer, 'accumulate_grad_batches', 1)
+                current_training_batch = trainer.global_step * accumulate_grad_batches
+                batches_since_last_val = current_training_batch - self._last_validation_batch
+                return val_interval - batches_since_last_val
             elif isinstance(val_interval, float) and val_interval > 1.0:
-                steps_since_last_val = trainer.global_step - self._last_validation_step
-                return int(val_interval) - steps_since_last_val
+                # Convert to training batches for consistency
+                accumulate_grad_batches = getattr(trainer, 'accumulate_grad_batches', 1)
+                current_training_batch = trainer.global_step * accumulate_grad_batches
+                batches_since_last_val = current_training_batch - self._last_validation_batch
+                return int(val_interval) - batches_since_last_val
         
         return None

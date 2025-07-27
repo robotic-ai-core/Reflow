@@ -46,7 +46,7 @@ class FlowProgressBarCallback(LearningRateMonitor):
         self._global_metric_keys_cache: Optional[Set[str]] = None
         self._interval_metric_keys_cache: Optional[Set[str]] = None
         self._available_metric_keys_cache: Optional[Set[str]] = None
-        self._last_validation_step: int = 0  # Track when validation actually occurred
+        self._last_validation_batch: int = 0  # Track when validation actually occurred (in training batches)
         self._validation_count: int = 0  # Track how many validations have completed
         
         # Cache for validation interval calculation
@@ -358,22 +358,34 @@ class FlowProgressBarCallback(LearningRateMonitor):
                     # For display: show progress within the current validation interval
                     return min(steps_since_validation, val_interval_steps)
             else:
-                # For step-based validation intervals
-                # Calculate steps since last validation to handle drift
-                steps_since_validation = trainer.global_step - self._last_validation_step
+                # For step-based validation intervals (val_check_interval counts training batches)
+                # Calculate current training batch number
+                num_training_batches = None
+                if hasattr(trainer, 'num_training_batches') and trainer.num_training_batches != float('inf'):
+                    num_training_batches = trainer.num_training_batches
                 
-                # VALIDATION BOUNDARY PAUSE FIX:
-                # If steps_since_validation equals or exceeds val_interval_steps,
-                # it means we've completed a full interval and are starting fresh
-                if steps_since_validation >= val_interval_steps:
-                    # We're at the start of a new interval after validation
-                    # Reset to show we're starting from 0 in this new interval
-                    expected_validations = trainer.global_step // val_interval_steps
-                    self._last_validation_step = expected_validations * val_interval_steps
-                    steps_since_validation = trainer.global_step - self._last_validation_step
-                
-                # Clamp to interval bounds to prevent exceeding total
-                return min(steps_since_validation, val_interval_steps)
+                if num_training_batches:
+                    # Calculate absolute training batch number
+                    current_training_batch = trainer.current_epoch * num_training_batches + batch_idx + 1
+                    
+                    # Calculate batches since last validation
+                    batches_since_validation = current_training_batch - self._last_validation_batch
+                    
+                    # VALIDATION BOUNDARY PAUSE FIX:
+                    # If batches_since_validation equals or exceeds val_interval_steps,
+                    # it means we've completed a full interval and are starting fresh
+                    if batches_since_validation >= val_interval_steps:
+                        # We're at the start of a new interval after validation
+                        # Reset to show we're starting from 0 in this new interval
+                        expected_validations = current_training_batch // val_interval_steps
+                        self._last_validation_batch = expected_validations * val_interval_steps
+                        batches_since_validation = current_training_batch - self._last_validation_batch
+                    
+                    # Clamp to interval bounds to prevent exceeding total
+                    return min(batches_since_validation, val_interval_steps)
+                else:
+                    # Fallback to batch_idx within current epoch if num_training_batches unavailable
+                    return min(batch_idx + 1, val_interval_steps)
         else:
             # For pure epoch-based training without validation intervals
             # progress is the batch within the current epoch
@@ -412,8 +424,9 @@ class FlowProgressBarCallback(LearningRateMonitor):
         if not self.is_enabled: 
             return
         
-        # Track when validation actually occurs to handle drift
-        self._last_validation_step = trainer.global_step
+        # Track when validation actually occurs to handle drift (in training batches)
+        accumulate_grad_batches = getattr(trainer, 'accumulate_grad_batches', 1)
+        self._last_validation_batch = trainer.global_step * accumulate_grad_batches
         
         # Configure bar for validation - only update totals, not description
         if self.current_interval_bar is not None:
@@ -635,18 +648,17 @@ class FlowProgressBarCallback(LearningRateMonitor):
                 # Use the robust dataloader length getter
                 num_training_batches = self._get_dataloader_length()
             if isinstance(val_check_interval, int) and val_check_interval > 0:
-                # Lightning's val_check_interval counts training batches, not optimizer steps
-                # We need to convert to optimizer steps for our progress bar
-                accumulate_grad_batches = getattr(self._trainer, 'accumulate_grad_batches', 1)
-                result = val_check_interval // accumulate_grad_batches
+                # Lightning's val_check_interval counts training batches directly
+                # Return the value as-is since we want to track training batches, not optimizer steps
+                result = val_check_interval
                 # Cache the result for future calls
                 self._cached_val_interval_steps = result
                 return result
             elif isinstance(val_check_interval, float) and val_check_interval > 0:
-                # Handle floats: > 1.0 are absolute steps, <= 1.0 are fractions of epoch
+                # Handle floats: > 1.0 are absolute training batches, <= 1.0 are fractions of epoch
                 if val_check_interval > 1.0:
-                    accumulate_grad_batches = getattr(self._trainer, 'accumulate_grad_batches', 1)
-                    result = int(val_check_interval) // accumulate_grad_batches
+                    # Lightning treats float > 1.0 as absolute training batch count
+                    result = int(val_check_interval)
                     # Cache the result for future calls
                     self._cached_val_interval_steps = result
                     return result
@@ -811,12 +823,15 @@ class FlowProgressBarCallback(LearningRateMonitor):
             return
             
         # Initialize validation tracking
-        if trainer.global_step > 0 and self._get_val_check_interval_steps():
-            val_interval = self._get_val_check_interval_steps()
-            self._last_validation_step = trainer.global_step
-            self._validation_count = trainer.global_step // val_interval
+        val_interval = self._get_val_check_interval_steps()
+        if trainer.global_step > 0 and val_interval:
+            # Calculate current training batch from global_step (approximate)
+            accumulate_grad_batches = getattr(trainer, 'accumulate_grad_batches', 1)
+            approx_training_batch = trainer.global_step * accumulate_grad_batches
+            self._last_validation_batch = (approx_training_batch // val_interval) * val_interval
+            self._validation_count = approx_training_batch // val_interval
         else:
-            self._last_validation_step = 0
+            self._last_validation_batch = 0
             self._validation_count = 0
 
         total_steps_val = self._get_total_steps()
@@ -932,13 +947,13 @@ class FlowProgressBarCallback(LearningRateMonitor):
         """Save progress bar callback state for checkpointing (Lightning's standard method)."""
         return {
             'validation_count': self._validation_count,
-            'last_validation_step': self._last_validation_step,
+            'last_validation_batch': self._last_validation_batch,
         }
     
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
         """Restore progress bar callback state from checkpoint (Lightning's standard method)."""
         self._validation_count = state_dict.get('validation_count', 0)
-        self._last_validation_step = state_dict.get('last_validation_step', 0)
+        self._last_validation_batch = state_dict.get('last_validation_batch', state_dict.get('last_validation_step', 0))
         
         # Clear metric caches so they get rebuilt with correct state
         self._global_metric_keys_cache = None
@@ -971,7 +986,7 @@ class FlowProgressBarCallback(LearningRateMonitor):
                     return {
                         'version': '1.0.0',
                         'validation_count': self.callback._validation_count,
-                        'last_validation_step': self.callback._last_validation_step,
+                        'last_validation_batch': self.callback._last_validation_batch,
                         'configuration': {
                             'refresh_rate': self.callback._refresh_rate,
                             'global_bar_metrics': self.callback.global_bar_metrics,
@@ -989,7 +1004,7 @@ class FlowProgressBarCallback(LearningRateMonitor):
                         
                         # Restore critical tracking state
                         self.callback._validation_count = state.get('validation_count', 0)
-                        self.callback._last_validation_step = state.get('last_validation_step', 0)
+                        self.callback._last_validation_batch = state.get('last_validation_batch', state.get('last_validation_step', 0))
                         
                         # Clear metric caches so they get rebuilt with correct state
                         self.callback._global_metric_keys_cache = None
