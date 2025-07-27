@@ -1,2 +1,0 @@
-[console_scripts]
-lightning-reflow = lightning_reflow.cli:main
