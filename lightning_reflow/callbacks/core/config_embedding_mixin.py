@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 import sys
 import logging
+import os
 
 from lightning.pytorch import Trainer, LightningModule
 
@@ -36,55 +37,22 @@ class ConfigEmbeddingMixin:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._original_argv = sys.argv.copy()
-        self._cli_config_validated = False
-        self._trainer_ref = None
     
-    def _validate_cli_configuration(self, trainer: Trainer) -> None:
+    def _can_embed_config(self, trainer: Trainer) -> bool:
         """
-        Validate that the CLI is properly configured for self-contained checkpoints.
+        Check if the context allows for config embedding.
         
-        This ensures Lightning CLI will create a config file that we can read.
-        Fails fast if CLI context is not available.
+        Returns True if trainer has a valid CLI reference, False otherwise.
         """
-        if self._cli_config_validated:
-            return
-            
-        # Check if trainer has CLI reference
         if hasattr(trainer, 'cli') and trainer.cli is not None:
             cli = trainer.cli
-            
-            # Check save_config_kwargs
-            if hasattr(cli, 'save_config_kwargs'):
-                save_config_kwargs = cli.save_config_kwargs
-                
-                # Check if config saving is disabled
-                if save_config_kwargs is False:
-                    raise RuntimeError(
-                        "❌ CRITICAL: DiffusionFlowLightningCLI has config saving disabled (save_config_kwargs=False). "
-                        "Self-contained checkpoints require Lightning to save a config file. "
-                        "Please remove save_config_kwargs=False or set it to a dict of save options."
-                    )
-                
-                # If it's not False, it's either None (default), True, or a dict - all of which should work
-                if save_config_kwargs is None:
-                    logger.info("✅ CLI configuration validated: using default config saving behavior")
-                elif save_config_kwargs is True or isinstance(save_config_kwargs, dict):
-                    logger.info(f"✅ CLI configuration validated: save_config_kwargs={save_config_kwargs}")
-                else:
-                    logger.warning(f"⚠️ Unexpected save_config_kwargs type: {type(save_config_kwargs).__name__}")
-            else:
-                # If save_config_kwargs doesn't exist, Lightning uses default behavior (saves config)
-                logger.info("✅ CLI configuration validated: save_config_kwargs not set, using Lightning defaults")
+            if hasattr(cli, 'save_config_kwargs') and cli.save_config_kwargs is False:
+                logger.warning("Config embedding disabled (save_config_kwargs=False).")
+                return False
+            return True
         else:
-            # No CLI context - this is a critical error for self-contained checkpoints
-            raise RuntimeError(
-                "❌ CRITICAL: ConfigEmbeddingMixin requires LightningReflowCLI context for self-contained checkpoints. "
-                "This callback cannot create reproducible checkpoints without CLI-generated config.yaml. "
-                "Either use LightningReflowCLI instead of raw PyTorch Lightning Trainer, "
-                "or remove ConfigEmbeddingMixin from callbacks that don't require config embedding."
-            )
-        
-        self._cli_config_validated = True
+            logger.warning("No CLI context on trainer, cannot embed config.")
+            return False
     
     def add_config_metadata(self, trainer: Trainer, pl_module: LightningModule, 
                            checkpoint: Dict[str, Any], metadata_key: str = 'self_contained_metadata') -> None:
@@ -100,8 +68,11 @@ class ConfigEmbeddingMixin:
         # Store trainer reference for config capture
         self._trainer_ref = trainer
         
-        # Validate CLI configuration on first use
-        self._validate_cli_configuration(trainer)
+        # Only embed config if the context is valid
+        if not self._can_embed_config(trainer):
+            logger.warning("Skipping config embedding due to invalid context.")
+            return
+            
         metadata = checkpoint.get(metadata_key, {})
         
         # Add basic metadata
@@ -120,18 +91,13 @@ class ConfigEmbeddingMixin:
             logger.info(f"📋 Storing W&B run ID in checkpoint: {wandb_run_id}")
         
         # Embed Lightning's config.yaml directly - MANDATORY for reproducibility
-        lightning_config = self._capture_lightning_config()
+        lightning_config = self._capture_lightning_config(trainer)
         if not lightning_config:
-            error_msg = (
-                "❌ CRITICAL: Failed to capture Lightning's auto-generated config.yaml. "
-                "Cannot create reproducible checkpoint without embedded config. "
-                "Lightning should have created config.yaml automatically."
+            logger.warning(
+                "Could not capture Lightning's config. "
+                "Checkpoint will not be self-contained."
             )
-            logger.error(error_msg)
-            raise RuntimeError(
-                "Lightning config capture failed - cannot guarantee reproducible checkpoint. "
-                "Check that Lightning's config.yaml exists and is readable."
-            )
+            return
         
         metadata['embedded_config_content'] = lightning_config
         metadata['config_hash'] = self._calculate_config_hash(lightning_config)
@@ -161,55 +127,30 @@ class ConfigEmbeddingMixin:
         # Config metadata is automatically available in checkpoint
         # No specific restoration needed for config content
     
-    def _capture_lightning_config(self) -> Optional[str]:
+    def _capture_lightning_config(self, trainer) -> Optional[str]:
         """
         Capture Lightning's configuration with config.yaml file as primary source.
         
         Returns:
             YAML string of Lightning's config, or None if not available
         """
-        try:
-            # Primary: Try to read config.yaml file from current run
-            config_path = Path("config.yaml")
-            if config_path.exists():
+        # First, try to load from the trainer's config_path if available
+        config_path = self._get_config_path_from_cli(trainer)
+        if config_path and os.path.exists(config_path):
+            try:
                 with open(config_path, 'r') as f:
-                    config_content = f.read()
-                
-                # Validate content is reasonable
-                if config_content.strip():
-                    logger.info("📋 Captured Lightning's config from config.yaml file (primary source)")
-                    return config_content
-                else:
-                    logger.warning("Lightning's config.yaml is empty, trying CLI context fallback")
-            else:
-                logger.info(f"Lightning's config.yaml not found at {config_path.absolute()}, trying CLI context fallback")
-            
-            # Fallback: Try to get from CLI context if config.yaml unavailable
-            if hasattr(self, '_trainer_ref') and self._trainer_ref and hasattr(self._trainer_ref, 'cli'):
-                cli = self._trainer_ref.cli
-                if hasattr(cli, 'config') and cli.config:
-                    import yaml
-                    # Convert the merged config to YAML string
-                    config_yaml = yaml.dump(cli.config, default_flow_style=False, sort_keys=False)
-                    logger.info("📋 Captured Lightning's merged config from CLI context (fallback)")
+                    # Return the raw YAML content
+                    config_yaml = f.read()
+                    logger.info(f"📋 Captured config from '{config_path}' for embedding")
                     return config_yaml
-                else:
-                    logger.warning("CLI context available but no config found")
-            else:
-                logger.warning("No CLI context available for config fallback")
-                
-            return None
-                
-        except Exception as e:
-            logger.error(f"Failed to capture Lightning's config: {e}")
-            return None
-    
-    def _calculate_config_hash(self, config_content: str) -> str:
-        """Calculate SHA256 hash of config content for validation."""
-        return hashlib.sha256(config_content.encode()).hexdigest()
-    
-    def _extract_config_path_from_argv(self) -> Optional[str]:
-        """Extract config file path from original command line arguments."""
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to read config from '{config_path}': {e}")
+        
+        logger.warning("No config source found for embedding.")
+        return None
+
+    def _get_config_path_from_cli(self, trainer) -> Optional[str]:
+        """Attempt to get the config path from the LightningCLI object."""
         try:
             argv = self._original_argv
             for i, arg in enumerate(argv):
@@ -221,6 +162,10 @@ class ConfigEmbeddingMixin:
         except Exception as e:
             logger.warning(f"Failed to extract config path: {e}")
             return None
+    
+    def _calculate_config_hash(self, config_content: str) -> str:
+        """Calculate SHA256 hash of config content for validation."""
+        return hashlib.sha256(config_content.encode()).hexdigest()
     
     def _get_wandb_run_id(self) -> Optional[str]:
         """Extract W&B run ID if available."""

@@ -39,35 +39,37 @@ class LightningReflowCLI(LightningCLI):
             self._execute_resume_as_subprocess()
             return
         
+        # For fit commands with a checkpoint, enable config overwrite to avoid errors
+        is_fit_command = len(sys.argv) > 1 and sys.argv[1] == 'fit'
+        has_ckpt_path = '--ckpt_path' in sys.argv or any(a.startswith('--ckpt_path=') for a in sys.argv)
+        
+        if is_fit_command and has_ckpt_path:
+            logger.info("🔧 Detected fit from checkpoint, enabling config overwrite.")
+            if 'save_config_kwargs' not in kwargs:
+                kwargs['save_config_kwargs'] = {}
+            kwargs['save_config_kwargs']['overwrite'] = True
+        
         # Initialize the Lightning CLI for standard commands (fit, validate, test, predict)
         super().__init__(*args, **kwargs)
     
     def before_fit(self) -> None:
-        """
-        Hook called before fit starts.
-        
-        This ensures the progress bar functionality is always available.
-        """
-        # Ensure StepOutputLoggerCallback is added first for metrics logging
-        self._ensure_step_output_logger()
-        # Then ensure PauseCallback is added for progress bar functionality
-        self._ensure_pause_callback()
+        """Hook called before fit starts - add essential callbacks."""
+        self._add_essential_callbacks()
     
-    def _ensure_pause_callback(self) -> None:
-        """Ensure PauseCallback is in the trainer callbacks for progress bar functionality."""
-        from ..callbacks.pause import PauseCallback
-        
-        # Check if we have a trainer
+    def _add_essential_callbacks(self) -> None:
+        """Add essential callbacks if not already present."""
         if not hasattr(self, 'trainer') or not self.trainer:
             return
             
-        # Check if PauseCallback is already present
-        has_pause_callback = any(
-            isinstance(cb, PauseCallback) for cb in self.trainer.callbacks
-        )
+        self._add_step_output_logger()
+        self._add_pause_callback()
+    
+    def _add_pause_callback(self) -> None:
+        """Add PauseCallback if not already present."""
+        from ..callbacks.pause import PauseCallback
         
+        has_pause_callback = any(isinstance(cb, PauseCallback) for cb in self.trainer.callbacks)
         if not has_pause_callback:
-            # Create and add PauseCallback
             pause_callback = PauseCallback(
                 checkpoint_dir='pause_checkpoints',
                 enable_pause=True,
@@ -75,41 +77,26 @@ class LightningReflowCLI(LightningCLI):
                 upload_key='w',
                 debounce_interval=0.3,
                 refresh_rate=1,
-                bar_colour='#fcac17',  # Orange progress bars
+                bar_colour='#fcac17',
                 global_bar_metrics=['*lr*'],
-                interval_bar_metrics=['loss', 'train/loss', 'train_loss'],  # Support all naming conventions
+                interval_bar_metrics=['loss', 'train/loss', 'train_loss'],
                 logging_interval='step',
             )
-            
-            # Add to trainer's callbacks
             self.trainer.callbacks.append(pause_callback)
-            
-            logger.info("✅ Automatically added PauseCallback for progress bar functionality")
+            logger.info("✅ Added PauseCallback for progress bar functionality")
     
-    def _ensure_step_output_logger(self) -> None:
-        """Ensure StepOutputLoggerCallback is present for metrics logging."""
+    def _add_step_output_logger(self) -> None:
+        """Add StepOutputLoggerCallback if not already present."""
         from ..callbacks.logging import StepOutputLoggerCallback
         
-        # Check if we have a trainer
-        if not hasattr(self, 'trainer') or not self.trainer:
-            return
-            
-        # Check if StepOutputLoggerCallback is already present
-        has_step_logger = any(
-            isinstance(cb, StepOutputLoggerCallback) for cb in self.trainer.callbacks
-        )
-        
+        has_step_logger = any(isinstance(cb, StepOutputLoggerCallback) for cb in self.trainer.callbacks)
         if not has_step_logger:
-            # Create with sensible defaults
             step_logger = StepOutputLoggerCallback(
-                train_prog_bar_metrics=['loss', 'train/loss'],  # Support both naming conventions
-                val_prog_bar_metrics=['val_loss', 'val/val_loss']  # Support both naming conventions
+                train_prog_bar_metrics=['loss', 'train/loss'],
+                val_prog_bar_metrics=['val_loss', 'val/val_loss']
             )
-            
-            # Add to trainer's callbacks
             self.trainer.callbacks.append(step_logger)
-            
-            logger.info("✅ Automatically added StepOutputLoggerCallback for metrics logging")
+            logger.info("✅ Added StepOutputLoggerCallback for metrics logging")
     
     def instantiate_trainer(self, **kwargs):
         """Override to set CLI reference in trainer for ConfigEmbeddingMixin compatibility."""
@@ -176,8 +163,9 @@ class LightningReflowCLI(LightningCLI):
         
         parser.add_argument(
             "--config", "-c",
+            action="append",
             type=str,
-            help="Path to configuration file"
+            help="Path to one or more override configuration files. Can be specified multiple times."
         )
         
         parser.add_argument(
@@ -213,7 +201,7 @@ class LightningReflowCLI(LightningCLI):
         try:
             # Create temporary LightningReflow to handle resume preparation
             temp_reflow = LightningReflow(
-                config_files=[args.config] if args.config else None,
+                config_files=args.config if args.config else None,
                 auto_configure_logging=False
             )
             
@@ -230,16 +218,9 @@ class LightningReflowCLI(LightningCLI):
             logger.info(f"   Checkpoint: {checkpoint_path}")
             
             # Build command for subprocess
-            cmd = [sys.executable, sys.argv[0], 'fit']
+            cmd = [sys.executable, '-m', 'lightning_reflow.cli.lightning_cli', 'fit']
             
-            # Add original config if provided
-            if args.config:
-                cmd.extend(['--config', args.config])
-            
-            # Add checkpoint path
-            cmd.extend(['--ckpt_path', str(checkpoint_path)])
-            
-            # Handle embedded config from checkpoint
+            # Handle embedded config from checkpoint FIRST
             temp_config_path = None
             if embedded_config_yaml:
                 # Write embedded config YAML string to temporary file
@@ -248,17 +229,26 @@ class LightningReflowCLI(LightningCLI):
                     with os.fdopen(temp_config_fd, 'w') as f:
                         f.write(embedded_config_yaml)
                     
-                    # Add temp config as additional config file
+                    # Add temp config as the BASE config file
                     cmd.extend(['--config', temp_config_path])
-                    logger.info(f"📄 Using embedded config from checkpoint: {temp_config_path}")
+                    logger.info(f"📄 Using Lightning's original merged config from checkpoint as base")
                     
                 except Exception as e:
-                    logger.warning(f"Failed to create temporary config file: {e}")
+                    logger.error(f"Failed to create temporary config file: {e}")
                     if temp_config_path:
                         os.unlink(temp_config_path)
                         temp_config_path = None
             else:
-                logger.info("📄 No embedded config found in checkpoint")
+                logger.info("📄 No embedded config found in checkpoint, resuming without it.")
+            
+            # Add any user-provided override configs
+            if args.config:
+                for config_file in args.config:
+                    cmd.extend(['--config', config_file])
+                logger.info(f"🔧 Applying override configs: {args.config}")
+            
+            # Add checkpoint path LAST so it overrides any ckpt_path in configs
+            cmd.extend(['--ckpt_path', str(checkpoint_path)])
             
             # Pass through any additional Lightning CLI arguments
             if unknown_args:

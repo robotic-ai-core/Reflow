@@ -55,9 +55,6 @@ class FlowProgressBarCallback(LearningRateMonitor):
         
         # Progress bar initialization tracking
         self._progress_bar_initialized = False
-        self._restored_global_step = None  # Store global_step from checkpoint
-        self._restored_epoch = None  # Store epoch from checkpoint
-        self._checkpoint_global_step = None  # Store checkpoint global_step for workaround
         
         # Register for manager state persistence
         self._register_for_state_persistence()
@@ -272,43 +269,8 @@ class FlowProgressBarCallback(LearningRateMonitor):
         """Hook called at the start of each training batch."""
         if not self.is_enabled: return
         
-        # Initialize progress bars on first batch (after global_step is restored)
+        # Initialize progress bars on first batch
         if not self._progress_bar_initialized:
-            print(f"🔍 [DEBUG] on_train_batch_start - First batch, batch_idx={batch_idx}")
-            print(f"🔍 [DEBUG] trainer.global_step before init: {trainer.global_step}")
-            
-            # WORKAROUND: If we're at batch_idx 0 and global_step is 0, but we're resuming,
-            # delay initialization until on_train_batch_end when Lightning has updated global_step
-            if batch_idx == 0 and trainer.global_step == 0:
-                # Check if we're actually resuming by looking for checkpoint indicators
-                # Lightning may not have updated global_step yet on the first batch
-                print(f"🔍 [DEBUG] Checking for resume indicators...")
-                
-                # Check various places where checkpoint info might be
-                if hasattr(trainer, '_checkpoint_connector') and trainer._checkpoint_connector:
-                    cc = trainer._checkpoint_connector
-                    print(f"🔍 [DEBUG]   Checkpoint connector state:")
-                    if hasattr(cc, '_ckpt_path'):
-                        print(f"🔍 [DEBUG]     _ckpt_path: {cc._ckpt_path}")
-                    if hasattr(cc, 'resume_checkpoint_path'):
-                        print(f"🔍 [DEBUG]     resume_checkpoint_path: {cc.resume_checkpoint_path}")
-                
-                # Check the fit loop state
-                if hasattr(trainer, 'fit_loop') and hasattr(trainer.fit_loop, 'epoch_progress'):
-                    print(f"🔍 [DEBUG]   Fit loop epoch progress:")
-                    ep = trainer.fit_loop.epoch_progress
-                    print(f"🔍 [DEBUG]     current: {ep.current}")
-                    # The completed attribute might not exist in all Lightning versions
-                    if hasattr(ep.current, 'completed'):
-                        print(f"🔍 [DEBUG]     completed: {ep.current.completed}")
-                    else:
-                        print(f"🔍 [DEBUG]     (no completed attribute)")
-                
-                # If current_epoch > 0, we're definitely resuming
-                if trainer.current_epoch > 0:
-                    print(f"🔍 [DEBUG] Delaying init - current_epoch > 0 indicates resume")
-                    return  # Delay initialization
-            
             self._initialize_progress_bars(trainer)
         
         self._current_batch_idx = batch_idx
@@ -321,10 +283,7 @@ class FlowProgressBarCallback(LearningRateMonitor):
         self._update_total_steps_bar(trainer)
         self._update_interval_bar(trainer)
         
-        # Note: Progress bar totals are fixed in on_train_epoch_start when dataloader becomes available
-        
         # Update progress bars
-
         self._update_progress_bar(self.total_steps_bar, trainer.global_step)
         interval_progress = self._calculate_interval_progress(trainer, batch_idx)
         self._update_progress_bar(self.current_interval_bar, interval_progress)
@@ -432,77 +391,6 @@ class FlowProgressBarCallback(LearningRateMonitor):
         if not self.is_enabled: 
             return
         
-        # Debug: Check if global_step is updated after first batch
-        if batch_idx == 0:
-            print(f"🔍 [DEBUG] on_train_batch_end - After first batch:")
-            print(f"🔍 [DEBUG]   trainer.global_step = {trainer.global_step}")
-            print(f"🔍 [DEBUG]   batch_idx = {batch_idx}")
-            
-            # If we delayed initialization, try now after Lightning has processed the batch
-            if not self._progress_bar_initialized:
-                print(f"🔍 [DEBUG] Initializing progress bars in on_train_batch_end")
-                self._initialize_progress_bars(trainer)
-            
-            # Check if we need to look for the actual checkpoint being used
-            if trainer.global_step == 1:
-                print(f"🔍 [DEBUG] WARNING: global_step is 1, but we might be resuming!")
-                print(f"🔍 [DEBUG] Checking for checkpoint in trainer state...")
-                
-                # Check if trainer has loaded a checkpoint
-                if hasattr(trainer, 'ckpt_path'):
-                    print(f"🔍 [DEBUG]   trainer.ckpt_path = {trainer.ckpt_path}")
-                
-                # Check various trainer attributes that might indicate resume
-                if hasattr(trainer, 'resume_from_checkpoint'):
-                    print(f"🔍 [DEBUG]   trainer.resume_from_checkpoint = {trainer.resume_from_checkpoint}")
-                
-                # The real issue: Lightning isn't restoring the global_step from checkpoint
-                # Let's manually check what epoch we should be at
-                print(f"🔍 [DEBUG]   trainer.current_epoch = {trainer.current_epoch}")
-                print(f"🔍 [DEBUG]   This suggests Lightning is NOT properly resuming training state!")
-                
-                # WORKAROUND: Since on_load_checkpoint isn't being called, let's check for
-                # the checkpoint path from the command line args
-                import sys
-                ckpt_arg_idx = None
-                for i, arg in enumerate(sys.argv):
-                    if arg == '--ckpt_path' and i + 1 < len(sys.argv):
-                        ckpt_arg_idx = i + 1
-                        break
-                
-                if ckpt_arg_idx:
-                    ckpt_path = sys.argv[ckpt_arg_idx]
-                    print(f"🔍 [DEBUG] Found checkpoint path from args: {ckpt_path}")
-                    
-                    # Load the checkpoint and get the real global_step
-                    try:
-                        import torch
-                        ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
-                        if 'global_step' in ckpt:
-                            real_global_step = ckpt['global_step']
-                            print(f"🔍 [DEBUG] Real global_step from checkpoint: {real_global_step}")
-                            
-                            # Fix the progress bar to show the correct value
-                            if self.total_steps_bar and real_global_step > 0:
-                                # Lightning will increment this, so we need to add 1
-                                corrected_step = real_global_step + 1
-                                print(f"🔍 [DEBUG] FIXING progress bar to show step {corrected_step}")
-                                
-                                # Update the progress bar position
-                                # We need to update the internal state properly
-                                self.total_steps_bar.n = corrected_step
-                                self.total_steps_bar.last_print_n = corrected_step - 1  # Force a refresh
-                                
-                                # Force the progress bar to update its display
-                                self.total_steps_bar.update(0)  # This forces a refresh without incrementing
-                                
-                                print(f"🔍 [DEBUG] Progress bar n={self.total_steps_bar.n}")
-                                
-                                # Store this for future batches
-                                self._checkpoint_global_step = real_global_step
-                    except Exception as e:
-                        print(f"🔍 [DEBUG] Failed to load checkpoint: {e}")
-            
         self._current_batch_idx = batch_idx
         self._update_metrics()
         self._populate_metrics_if_needed(force_refresh=False)
@@ -510,8 +398,6 @@ class FlowProgressBarCallback(LearningRateMonitor):
         if batch_idx % self._refresh_rate == 0:
             self._update_total_steps_bar(trainer)
             self._update_interval_bar(trainer)
-        
-        # Note: Progress bar totals are fixed in on_train_epoch_start when dataloader becomes available
         
         # Update progress bars
         self._update_progress_bar(self.total_steps_bar, trainer.global_step)
@@ -899,19 +785,10 @@ class FlowProgressBarCallback(LearningRateMonitor):
         self.current_interval_bar.set_description(desc_with_status)
 
     def on_load_checkpoint(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", checkpoint: Dict[str, Any]) -> None:
-        """Capture the global_step from the checkpoint when it's loaded."""
-        print(f"🔍 [DEBUG] on_load_checkpoint called!")
+        """Hook called when checkpoint is loaded - Lightning handles state restoration."""
+        logger.debug(f"FlowProgressBar: on_load_checkpoint called with checkpoint keys: {list(checkpoint.keys())}")
         if 'global_step' in checkpoint:
-            self._restored_global_step = checkpoint['global_step']
-            print(f"🔍 [DEBUG] Captured global_step {self._restored_global_step} from checkpoint")
-            logger.info(f"[FlowProgressBar] Captured global_step {self._restored_global_step} from checkpoint")
-            
-            # WORKAROUND: Store the checkpoint epoch as well
-            if 'epoch' in checkpoint:
-                self._restored_epoch = checkpoint['epoch']
-                print(f"🔍 [DEBUG] Captured epoch {self._restored_epoch} from checkpoint")
-        else:
-            print(f"🔍 [DEBUG] No global_step in checkpoint!")
+            logger.info(f"FlowProgressBar: Lightning loading checkpoint with global_step={checkpoint['global_step']}")
 
     def on_train_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
         # Only call parent's on_train_start if trainer has a logger
@@ -922,110 +799,32 @@ class FlowProgressBarCallback(LearningRateMonitor):
         self._trainer = trainer
         self._prog_bar_metrics = {}
         
-        # Note: We delay progress bar initialization to on_train_batch_start
-        # because trainer.global_step might not be properly restored yet when
-        # resuming from checkpoint. Lightning restores the global_step after
-        # on_train_start is called, which would cause the progress bar to
-        # incorrectly start at 0 instead of the resumed step.
+        # Delay progress bar initialization to on_train_batch_start
+        # to ensure global_step is properly restored from checkpoint
         self._progress_bar_initialized = False
             
         if not self.is_enabled: return
 
     def _initialize_progress_bars(self, trainer: "pl.Trainer") -> None:
-        """Initialize progress bars with correct global_step value.
-        
-        This is called from on_train_batch_start to ensure global_step
-        is properly restored when resuming from checkpoint.
-        """
+        """Initialize progress bars with trainer's current global_step."""
         if self._progress_bar_initialized:
             return
             
         # Initialize validation tracking
-        # If resuming, estimate how many validations have already occurred
         if trainer.global_step > 0 and self._get_val_check_interval_steps():
             val_interval = self._get_val_check_interval_steps()
-            # When resuming from checkpoint, start interval progress from 0
-            # by setting last validation step to current step
             self._last_validation_step = trainer.global_step
-            # Estimate validation count based on how many intervals have passed
             self._validation_count = trainer.global_step // val_interval
         else:
             self._last_validation_step = 0
             self._validation_count = 0
 
         total_steps_val = self._get_total_steps()
-        
-        # Debug: Check multiple sources for global_step
-        current_global_step = trainer.global_step
-        print(f"🔍 [DEBUG] FlowProgressBar initialization:")
-        print(f"🔍 [DEBUG]   trainer.global_step = {current_global_step}")
-        print(f"🔍 [DEBUG]   trainer.current_epoch = {trainer.current_epoch}")
-        print(f"🔍 [DEBUG]   trainer.state = {trainer.state}")
-        
-        # Check if we captured global_step from on_load_checkpoint
-        if self._restored_global_step is not None:
-            print(f"🔍 [DEBUG]   self._restored_global_step = {self._restored_global_step}")
-        else:
-            print(f"🔍 [DEBUG]   self._restored_global_step = None")
-        
-        # Check checkpoint connector info
-        ckpt_path = None
-        if hasattr(trainer, '_checkpoint_connector'):
-            connector = trainer._checkpoint_connector
-            print(f"🔍 [DEBUG]   checkpoint_connector exists")
-            
-            # Try multiple attributes where checkpoint path might be stored
-            for attr_name in ['resume_from_checkpoint_fit_path', '_ckpt_path', 'ckpt_path', '_user_ckpt_path']:
-                if hasattr(connector, attr_name):
-                    attr_value = getattr(connector, attr_name)
-                    print(f"🔍 [DEBUG]   connector.{attr_name} = {attr_value}")
-                    if attr_value and ckpt_path is None:
-                        ckpt_path = attr_value
-        
-        # Check if we have ckpt_path on trainer
-        if hasattr(trainer, 'ckpt_path'):
-            print(f"🔍 [DEBUG]   trainer.ckpt_path = {trainer.ckpt_path}")
-            if trainer.ckpt_path:
-                ckpt_path = trainer.ckpt_path
-        
-        # If we have a checkpoint path, let's manually load and check the global_step
-        checkpoint_global_step = None
-        if ckpt_path:
-            try:
-                import torch
-                print(f"🔍 [DEBUG]   Loading checkpoint to check global_step: {ckpt_path}")
-                ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
-                if 'global_step' in ckpt:
-                    checkpoint_global_step = ckpt['global_step']
-                    print(f"🔍 [DEBUG]   checkpoint['global_step'] = {checkpoint_global_step}")
-                else:
-                    print(f"🔍 [DEBUG]   No 'global_step' key in checkpoint")
-                
-                # Also check other possible keys
-                if 'epoch' in ckpt:
-                    print(f"🔍 [DEBUG]   checkpoint['epoch'] = {ckpt['epoch']}")
-                if 'loops' in ckpt:
-                    print(f"🔍 [DEBUG]   checkpoint has 'loops' key")
-                    
-            except Exception as e:
-                print(f"🔍 [DEBUG]   Failed to load checkpoint: {e}")
-        
-        # Decide which global_step to use
-        if self._restored_global_step is not None:
-            print(f"🔍 [DEBUG] Using _restored_global_step: {self._restored_global_step}")
-            current_global_step = self._restored_global_step
-        elif checkpoint_global_step is not None and current_global_step != checkpoint_global_step:
-            print(f"🔍 [DEBUG] trainer.global_step ({current_global_step}) != checkpoint global_step ({checkpoint_global_step})")
-            print(f"🔍 [DEBUG] Using checkpoint global_step: {checkpoint_global_step}")
-            current_global_step = checkpoint_global_step
-        else:
-            print(f"🔍 [DEBUG] Using trainer.global_step: {current_global_step}")
-        
-        logger.info(f"[FlowProgressBar] Initializing global progress bar with trainer.global_step={current_global_step}")
+        logger.info(f"FlowProgressBar: Initializing with trainer.global_step={trainer.global_step}")
         
         self.total_steps_bar = tqdm(
             desc="Global Steps",
-            initial=current_global_step, 
+            initial=trainer.global_step, 
             total=total_steps_val,
             position=self.process_position,
             dynamic_ncols=True,
@@ -1034,13 +833,12 @@ class FlowProgressBarCallback(LearningRateMonitor):
             leave=False,
             disable=self.is_disabled,
             smoothing=SMOOTHING_FACTOR,
-            miniters=1,  # Update on every iteration
-            mininterval=0.1,  # Update at least every 0.1 seconds
-            bar_format=None  # Use default format initially
+            miniters=1,
+            mininterval=0.1,
+            bar_format=None
         )
         
         if total_steps_val is None or total_steps_val == 0:
-            # For unknown total, hide the bar but keep the stats
             self.total_steps_bar.bar_format = '{desc}: {n_fmt} [{elapsed}, {rate_fmt}{postfix}]'
 
         # Initialize interval bar
@@ -1051,10 +849,8 @@ class FlowProgressBarCallback(LearningRateMonitor):
         if val_interval_steps:
             interval_total = val_interval_steps
             if self._trainer.val_check_interval or (hasattr(self._trainer, 'check_val_every_n_epoch') and self._trainer.check_val_every_n_epoch):
-                # For epoch-based validation, be more specific about what we're showing
                 check_val_every_n_epoch = getattr(self._trainer, 'check_val_every_n_epoch', None)
                 if check_val_every_n_epoch:
-                    # Show which epoch we're in within the validation cycle
                     current_epoch = self._trainer.current_epoch
                     epoch_in_cycle = (current_epoch % check_val_every_n_epoch) + 1
                     interval_desc = f"Validation Cycle {self._trainer.current_epoch // check_val_every_n_epoch + 1} - Epoch {epoch_in_cycle}/{check_val_every_n_epoch}"
@@ -1077,16 +873,14 @@ class FlowProgressBarCallback(LearningRateMonitor):
             leave=False,
             disable=self.is_disabled,
             smoothing=SMOOTHING_FACTOR,
-            miniters=1,  # Update on every iteration
-            mininterval=0.1,  # Update at least every 0.1 seconds
-            bar_format=None  # Use default format initially
+            miniters=1,
+            mininterval=0.1,
+            bar_format=None
         )
         
         if interval_total is None or interval_total == float('inf'):
-            # For unknown total, hide the bar but keep the stats
             self.current_interval_bar.bar_format = '{desc}: {n_fmt} [{elapsed}, {rate_fmt}{postfix}]'
         else:
-            # Explicitly ensure default format is used
             self.current_interval_bar.bar_format = None
             
         self._progress_bar_initialized = True
