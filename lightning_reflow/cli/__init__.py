@@ -1,3 +1,3 @@
-from .lightning_cli import LightningReflowCLI, main
+from .lightning_cli import LightningReflowCLI
 
-__all__ = ["LightningReflowCLI", "main"] 
+__all__ = ["LightningReflowCLI"] 

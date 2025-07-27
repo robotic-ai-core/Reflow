@@ -5,14 +5,46 @@ This module provides a thin CLI wrapper around the core LightningReflow class,
 handling command-line argument parsing and translating them to method calls.
 """
 
+import argparse
 import logging
+import os
 import subprocess
 import sys
+import tempfile
+import yaml
+from pathlib import Path
 from lightning.pytorch.cli import LightningCLI
 
 from ..core import LightningReflow
 
 logger = logging.getLogger(__name__)
+
+# Constants
+RESUME_COMMAND = 'resume'
+FIT_COMMAND = 'fit'
+CHECKPOINT_PATH_ARG = '--ckpt_path'
+CONFIG_ARG = '--config'
+TEMP_CONFIG_PREFIX = 'resume_config_'
+TEMP_CONFIG_SUFFIX = '.yaml'
+
+# Default callback configurations
+DEFAULT_PAUSE_CALLBACK_CONFIG = {
+    'checkpoint_dir': 'pause_checkpoints',
+    'enable_pause': True,
+    'pause_key': 'p',
+    'upload_key': 'w',
+    'debounce_interval': 0.3,
+    'refresh_rate': 1,
+    'bar_colour': '#fcac17',
+    'global_bar_metrics': ['*lr*'],
+    'interval_bar_metrics': ['loss', 'train/loss', 'train_loss'],
+    'logging_interval': 'step',
+}
+
+DEFAULT_STEP_LOGGER_CONFIG = {
+    'train_prog_bar_metrics': ['loss', 'train/loss'],
+    'val_prog_bar_metrics': ['val_loss', 'val/val_loss']
+}
 
 
 class LightningReflowCLI(LightningCLI):
@@ -40,14 +72,9 @@ class LightningReflowCLI(LightningCLI):
             return
         
         # For fit commands with a checkpoint, enable config overwrite to avoid errors
-        is_fit_command = len(sys.argv) > 1 and sys.argv[1] == 'fit'
-        has_ckpt_path = '--ckpt_path' in sys.argv or any(a.startswith('--ckpt_path=') for a in sys.argv)
-        
-        if is_fit_command and has_ckpt_path:
+        if self._is_fit_with_checkpoint():
             logger.info("🔧 Detected fit from checkpoint, enabling config overwrite.")
-            if 'save_config_kwargs' not in kwargs:
-                kwargs['save_config_kwargs'] = {}
-            kwargs['save_config_kwargs']['overwrite'] = True
+            self._enable_config_overwrite(kwargs)
         
         # Initialize the Lightning CLI for standard commands (fit, validate, test, predict)
         super().__init__(*args, **kwargs)
@@ -70,18 +97,7 @@ class LightningReflowCLI(LightningCLI):
         
         has_pause_callback = any(isinstance(cb, PauseCallback) for cb in self.trainer.callbacks)
         if not has_pause_callback:
-            pause_callback = PauseCallback(
-                checkpoint_dir='pause_checkpoints',
-                enable_pause=True,
-                pause_key='p',
-                upload_key='w',
-                debounce_interval=0.3,
-                refresh_rate=1,
-                bar_colour='#fcac17',
-                global_bar_metrics=['*lr*'],
-                interval_bar_metrics=['loss', 'train/loss', 'train_loss'],
-                logging_interval='step',
-            )
+            pause_callback = PauseCallback(**DEFAULT_PAUSE_CALLBACK_CONFIG)
             self.trainer.callbacks.append(pause_callback)
             logger.info("✅ Added PauseCallback for progress bar functionality")
     
@@ -91,10 +107,7 @@ class LightningReflowCLI(LightningCLI):
         
         has_step_logger = any(isinstance(cb, StepOutputLoggerCallback) for cb in self.trainer.callbacks)
         if not has_step_logger:
-            step_logger = StepOutputLoggerCallback(
-                train_prog_bar_metrics=['loss', 'train/loss'],
-                val_prog_bar_metrics=['val_loss', 'val/val_loss']
-            )
+            step_logger = StepOutputLoggerCallback(**DEFAULT_STEP_LOGGER_CONFIG)
             self.trainer.callbacks.append(step_logger)
             logger.info("✅ Added StepOutputLoggerCallback for metrics logging")
     
@@ -133,17 +146,43 @@ class LightningReflowCLI(LightningCLI):
     
     def _is_resume_command(self) -> bool:
         """Check if the command is a resume command."""
-        import sys
-        return len(sys.argv) > 1 and sys.argv[1] == 'resume'
+        return len(sys.argv) > 1 and sys.argv[1] == RESUME_COMMAND
+    
+    def _is_fit_with_checkpoint(self) -> bool:
+        """Check if this is a fit command with a checkpoint path."""
+        is_fit_command = len(sys.argv) > 1 and sys.argv[1] == FIT_COMMAND
+        has_ckpt_path = CHECKPOINT_PATH_ARG in sys.argv or any(a.startswith(f'{CHECKPOINT_PATH_ARG}=') for a in sys.argv)
+        return is_fit_command and has_ckpt_path
+    
+    def _enable_config_overwrite(self, kwargs):
+        """Enable config overwrite for fit commands with checkpoints."""
+        if 'save_config_kwargs' not in kwargs:
+            kwargs['save_config_kwargs'] = {}
+        kwargs['save_config_kwargs']['overwrite'] = True
     
     def _execute_resume_as_subprocess(self) -> None:
         """Execute resume command by spawning a subprocess with fit command."""
-        import argparse
-        import tempfile
-        import yaml
-        import os
-        
-        # Parse resume arguments first
+        try:
+            # Parse resume arguments
+            parser = self._create_resume_parser()
+            args, unknown_args = parser.parse_known_args(sys.argv[2:])
+            
+            # Validate arguments
+            self._validate_resume_args(parser, args)
+            
+            # Prepare resume using LightningReflow
+            resume_source = args.checkpoint_path or args.checkpoint_artifact
+            checkpoint_path, embedded_config_yaml, wandb_run_id, temp_reflow = self._prepare_resume(args, resume_source)
+            
+            # Execute subprocess
+            self._execute_fit_subprocess(args, unknown_args, checkpoint_path, embedded_config_yaml, wandb_run_id, temp_reflow)
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to execute resume command: {e}")
+            sys.exit(1)
+    
+    def _create_resume_parser(self) -> argparse.ArgumentParser:
+        """Create argument parser for resume command."""
         parser = argparse.ArgumentParser(
             prog="lightning-reflow resume",
             description="Resume Lightning Reflow training from a checkpoint"
@@ -162,7 +201,7 @@ class LightningReflowCLI(LightningCLI):
         )
         
         parser.add_argument(
-            "--config", "-c",
+            CONFIG_ARG, "-c",
             action="append",
             type=str,
             help="Path to one or more override configuration files. Can be specified multiple times."
@@ -186,69 +225,95 @@ class LightningReflowCLI(LightningCLI):
             help="W&B project (for artifact resumption)"
         )
         
-        # Parse resume arguments (skip 'resume' subcommand)
-        args, unknown_args = parser.parse_known_args(sys.argv[2:])
-        
-        # Validate arguments
+        return parser
+    
+    def _validate_resume_args(self, parser, args):
+        """Validate resume command arguments."""
         if args.checkpoint_path and args.checkpoint_artifact:
             parser.error("Cannot specify both --checkpoint-path and --checkpoint-artifact")
         
         if not args.checkpoint_path and not args.checkpoint_artifact:
             parser.error("Must specify either --checkpoint-path or --checkpoint-artifact")
+    
+    def _prepare_resume(self, args, resume_source):
+        """Prepare resume by creating temp LightningReflow and getting strategy."""
+        temp_reflow = LightningReflow(
+            config_files=args.config if args.config else None,
+            auto_configure_logging=False
+        )
         
-        resume_source = args.checkpoint_path or args.checkpoint_artifact
+        # Use resume strategy to prepare checkpoint and config
+        strategy = temp_reflow._select_resume_strategy(resume_source)
+        checkpoint_path, embedded_config_yaml = strategy.prepare_resume(
+            resume_source=resume_source,
+            use_wandb_config=args.use_wandb_config,
+            entity=args.entity,
+            project=args.project
+        )
+        
+        # Extract W&B run ID from checkpoint for proper resumption
+        wandb_run_id = self._extract_wandb_run_id_from_checkpoint(checkpoint_path)
+        
+        logger.info(f"🔄 Preparing subprocess resume command")
+        logger.info(f"   Checkpoint: {checkpoint_path}")
+        if wandb_run_id:
+            logger.info(f"   W&B Run ID: {wandb_run_id}")
+        else:
+            logger.info("   W&B Run ID: Not found in checkpoint")
+        
+        # Store the temp_reflow for cleanup AFTER subprocess completes
+        return checkpoint_path, embedded_config_yaml, wandb_run_id, temp_reflow
+    
+    def _extract_wandb_run_id_from_checkpoint(self, checkpoint_path):
+        """Extract W&B run ID from checkpoint file."""
+        try:
+            import torch
+            from ..utils.checkpoint.checkpoint_utils import extract_wandb_run_id
+            
+            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+            run_id = extract_wandb_run_id(checkpoint)
+            
+            if run_id:
+                logger.info(f"✅ Extracted W&B run ID from checkpoint: {run_id}")
+                return run_id
+            else:
+                logger.info("ℹ️ No W&B run ID found in checkpoint metadata")
+                return None
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to extract W&B run ID from checkpoint: {e}")
+            return None
+    
+    def _execute_fit_subprocess(self, args, unknown_args, checkpoint_path, embedded_config_yaml, wandb_run_id=None, temp_reflow=None):
+        """Execute the fit command in a subprocess."""
+        # Build command for subprocess
+        cmd = [sys.executable, '-m', 'lightning_reflow.cli', FIT_COMMAND]
+        
+        # Handle embedded config from checkpoint FIRST (preserves --config --ckpt_path order)
+        temp_config_path = self._write_temp_config(embedded_config_yaml)
         
         try:
-            # Create temporary LightningReflow to handle resume preparation
-            temp_reflow = LightningReflow(
-                config_files=args.config if args.config else None,
-                auto_configure_logging=False
-            )
-            
-            # Use resume strategy to prepare checkpoint and config
-            strategy = temp_reflow._select_resume_strategy(resume_source)
-            checkpoint_path, embedded_config_yaml = strategy.prepare_resume(
-                resume_source=resume_source,
-                use_wandb_config=args.use_wandb_config,
-                entity=args.entity,
-                project=args.project
-            )
-            
-            logger.info(f"🔄 Preparing subprocess resume command")
-            logger.info(f"   Checkpoint: {checkpoint_path}")
-            
-            # Build command for subprocess
-            cmd = [sys.executable, '-m', 'lightning_reflow.cli.lightning_cli', 'fit']
-            
-            # Handle embedded config from checkpoint FIRST
-            temp_config_path = None
-            if embedded_config_yaml:
-                # Write embedded config YAML string to temporary file
-                temp_config_fd, temp_config_path = tempfile.mkstemp(suffix='.yaml', prefix='resume_config_')
-                try:
-                    with os.fdopen(temp_config_fd, 'w') as f:
-                        f.write(embedded_config_yaml)
-                    
-                    # Add temp config as the BASE config file
-                    cmd.extend(['--config', temp_config_path])
-                    logger.info(f"📄 Using Lightning's original merged config from checkpoint as base")
-                    
-                except Exception as e:
-                    logger.error(f"Failed to create temporary config file: {e}")
-                    if temp_config_path:
-                        os.unlink(temp_config_path)
-                        temp_config_path = None
+            # Add temp config as the BASE config file
+            if temp_config_path:
+                cmd.extend([CONFIG_ARG, temp_config_path])
+                logger.info(f"📄 Using Lightning's original merged config from checkpoint as base")
             else:
                 logger.info("📄 No embedded config found in checkpoint, resuming without it.")
             
             # Add any user-provided override configs
             if args.config:
                 for config_file in args.config:
-                    cmd.extend(['--config', config_file])
+                    cmd.extend([CONFIG_ARG, config_file])
                 logger.info(f"🔧 Applying override configs: {args.config}")
             
             # Add checkpoint path LAST so it overrides any ckpt_path in configs
-            cmd.extend(['--ckpt_path', str(checkpoint_path)])
+            cmd.extend([CHECKPOINT_PATH_ARG, str(checkpoint_path)])
+            
+            # Configure W&B logger for run resumption
+            if wandb_run_id:
+                self._add_wandb_resume_config(cmd, wandb_run_id, embedded_config_yaml)
+            else:
+                logger.info("ℹ️ No W&B run ID found - will create new W&B run")
             
             # Pass through any additional Lightning CLI arguments
             if unknown_args:
@@ -258,90 +323,109 @@ class LightningReflowCLI(LightningCLI):
             logger.info(f"🚀 Executing: {' '.join(cmd)}")
             
             # Execute the fit command in subprocess
-            try:
-                result = subprocess.run(cmd, check=True)
-                sys.exit(result.returncode)
-            except subprocess.CalledProcessError as e:
-                logger.error(f"❌ Subprocess failed with return code {e.returncode}")
-                sys.exit(e.returncode)
-            finally:
-                # Cleanup temporary config file
-                if temp_config_path and os.path.exists(temp_config_path):
-                    try:
-                        os.unlink(temp_config_path)
-                        logger.info(f"🗑️ Cleaned up temporary config: {temp_config_path}")
-                    except Exception:
-                        pass
-                
-                # Cleanup temp reflow strategies
+            result = subprocess.run(cmd, check=True)
+            sys.exit(result.returncode)
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"❌ Subprocess failed with return code {e.returncode}")
+            sys.exit(e.returncode)
+        finally:
+            # Cleanup temp config file
+            self._cleanup_temp_config(temp_config_path)
+            
+            # Cleanup temp W&B config file if created
+            if hasattr(self, '_temp_wandb_config_path'):
+                self._cleanup_temp_config(self._temp_wandb_config_path)
+                delattr(self, '_temp_wandb_config_path')
+            
+            # Cleanup temp reflow strategies AFTER subprocess completes
+            if temp_reflow:
                 try:
                     temp_reflow._cleanup_strategies()
                     logger.info(f"🗑️ Cleaned up temporary reflow strategies")
                 except Exception:
                     pass
+    
+    def _write_temp_config(self, embedded_config_yaml):
+        """Write embedded config YAML to temporary file."""
+        if not embedded_config_yaml:
+            return None
+            
+        try:
+            temp_config_fd, temp_config_path = tempfile.mkstemp(
+                suffix=TEMP_CONFIG_SUFFIX, 
+                prefix=TEMP_CONFIG_PREFIX
+            )
+            with os.fdopen(temp_config_fd, 'w') as f:
+                f.write(embedded_config_yaml)
+            return temp_config_path
+        except Exception as e:
+            logger.error(f"Failed to create temporary config file: {e}")
+            return None
+    
+    def _cleanup_temp_config(self, temp_config_path):
+        """Clean up temporary config file."""
+        if temp_config_path and os.path.exists(temp_config_path):
+            try:
+                os.unlink(temp_config_path)
+                logger.info(f"🗑️ Cleaned up temporary config: {temp_config_path}")
+            except Exception:
+                pass
+    
+    def _add_wandb_resume_config(self, cmd, wandb_run_id, embedded_config_yaml):
+        """Add W&B logger configuration for resuming a run."""
+        try:
+            # Parse embedded config to check existing logger configuration
+            existing_config = {}
+            if embedded_config_yaml:
+                existing_config = yaml.safe_load(embedded_config_yaml) or {}
+            
+            # Check if there's already a logger configured
+            trainer_config = existing_config.get('trainer', {})
+            existing_logger = trainer_config.get('logger', None)
+            
+            # Prepare W&B logger config
+            if isinstance(existing_logger, dict) and existing_logger.get('class_path', '').endswith('WandbLogger'):
+                # Update existing W&B logger config
+                logger.info("📝 Updating existing W&B logger configuration for resume")
+                if 'init_args' not in existing_logger:
+                    existing_logger['init_args'] = {}
+                existing_logger['init_args']['id'] = wandb_run_id
+                existing_logger['init_args']['resume'] = 'allow'
+                wandb_config = {'trainer': {'logger': existing_logger}}
+            else:
+                # Create new W&B logger config
+                logger.info("📝 Creating new W&B logger configuration for resume")
+                wandb_logger_config = {
+                    'class_path': 'lightning.pytorch.loggers.WandbLogger',
+                    'init_args': {
+                        'id': wandb_run_id,
+                        'resume': 'allow'
+                    }
+                }
+                wandb_config = {'trainer': {'logger': wandb_logger_config}}
+            
+            # Write config to temporary file
+            wandb_config_yaml = yaml.dump(wandb_config)
+            temp_wandb_config_fd, temp_wandb_config_path = tempfile.mkstemp(
+                suffix='.yaml', 
+                prefix='wandb_logger_config_'
+            )
+            
+            with os.fdopen(temp_wandb_config_fd, 'w') as f:
+                f.write(wandb_config_yaml)
+            
+            # Add as config file (will be merged with others)
+            cmd.extend([CONFIG_ARG, temp_wandb_config_path])
+            logger.info(f"🔄 Configuring W&B logger to resume run: {wandb_run_id}")
+            
+            # Store path for cleanup
+            self._temp_wandb_config_path = temp_wandb_config_path
             
         except Exception as e:
-            logger.error(f"❌ Failed to execute resume command: {e}")
-            sys.exit(1)
-    
-    
-    def add_arguments_to_parser(self, parser) -> None:
-        """Add Lightning Reflow specific arguments to the parser."""
-        super().add_arguments_to_parser(parser)
-        
-        # Add custom Lightning Reflow arguments
-        parser.add_argument(
-            "--wandb-project",
-            type=str,
-            default="",
-            help="W&B project name. Overrides project name in logger config."
-        )
-        
-        parser.add_argument(
-            "--wandb-log-model",
-            type=bool,
-            default=None,
-            help="Custom alias to control wandb model logging."
-        )
-        
-        parser.add_argument(
-            "--resume-from-wandb",
-            type=str,
-            default=None,
-            help="Resume training from a W&B checkpoint artifact."
-        )
-        
-        parser.add_argument(
-            "--weights-only",
-            action="store_true",
-            help="Load only model weights from checkpoint, not training state."
-        )
-        
-        parser.add_argument(
-            "--use-wandb-config",
-            action="store_true", 
-            help="Use the config file saved in the W&B artifact."
-        )
-        
-        parser.add_argument(
-            "--auto-resume-wandb",
-            action="store_true",
-            default=True,
-            help="Automatically detect wandb run ID from checkpoint path."
-        )
-        
-        parser.add_argument(
-            "--disable-pause-exit",
-            action="store_true",
-            help="Disable validation-boundary pause functionality."
-        )
-        
-        parser.add_argument(
-            "--wandb-run",
-            type=str,
-            default=None,
-            help="W&B run ID to resume"
-        )
+            logger.error(f"❌ Failed to create W&B logger config: {e}")
+            if 'temp_wandb_config_path' in locals() and os.path.exists(temp_wandb_config_path):
+                os.unlink(temp_wandb_config_path)
 
 
 def main():
