@@ -387,7 +387,7 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
             checkpoint_path = self._get_checkpoint_path(trainer, upload=should_upload)
             print(f"💾 Creating pause checkpoint at: {checkpoint_path}")
             
-            # Step 2: Save checkpoint (critical operation)
+            # Step 2: Save checkpoint (critical operation) - no additional print needed
             self._save_checkpoint_with_validation(trainer, pl_module, checkpoint_path)
             print(f"✅ Pause checkpoint saved successfully")
             
