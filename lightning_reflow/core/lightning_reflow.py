@@ -26,6 +26,11 @@ class LightningReflow:
     models with advanced features like pause/resume, W&B integration, and sophisticated
     configuration management.
     
+    **Progress Bar Management**: LightningReflow automatically disables Lightning's 
+    default progress bar (`enable_progress_bar=False`) and replaces it with 
+    FlowProgressBarCallback, which provides dual progress bars (global + interval)
+    with enhanced metrics display. This prevents UI conflicts between progress systems.
+    
     Example usage:
         # Basic usage
         reflow = LightningReflow(
@@ -376,8 +381,11 @@ class LightningReflow:
     
     def _create_trainer(self) -> pl.Trainer:
         """Create trainer from configuration."""
-        # Start with default trainer config
-        trainer_config = {**self.trainer_defaults}
+        # Start with LightningReflow's safe defaults
+        trainer_config = {
+            "enable_progress_bar": False,  # Disable Lightning's default to prevent conflicts with FlowProgressBarCallback
+            **self.trainer_defaults  # User defaults can override our safe defaults
+        }
         
         # Merge with config file trainer settings
         config_trainer = self.config_loader.get_section("trainer", {})
