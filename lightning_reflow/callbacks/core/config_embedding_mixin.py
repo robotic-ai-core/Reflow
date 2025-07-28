@@ -1,8 +1,17 @@
 """
 Config embedding mixin for embedding configurations in checkpoints.
 
-This mixin provides functionality to embed Lightning's auto-generated config.yaml
-directly in checkpoints for reproducibility.
+CRITICAL: This mixin embeds ONLY Lightning's auto-generated config.yaml file,
+which contains the COMPLETE merged configuration (trainer_defaults + config files).
+
+DO NOT attempt to capture Lightning state ourselves. The only source of
+embedded config should be Lightning's own config.yaml file that it automatically
+generates in the log directory on every run.
+
+This approach ensures:
+1. Complete configuration reproducibility (includes trainer_defaults)
+2. Consistency between initial training and pause/resume sessions
+3. Single source of truth from Lightning's own config management
 """
 
 import time
@@ -22,10 +31,17 @@ class ConfigEmbeddingMixin:
     """
     Mixin to add config embedding functionality to any checkpoint callback.
     
-    This mixin provides:
-    - Direct embedding of Lightning's auto-generated config.yaml
-    - Config hash validation
-    - W&B run ID storage
+    DESIGN PRINCIPLE: Only embed Lightning's auto-generated config.yaml
+    
+    Lightning automatically saves the COMPLETE merged configuration to:
+    {log_dir}/config.yaml
+    
+    This file contains:
+    - trainer_defaults (set programmatically)
+    - Config file settings
+    - All other Lightning CLI settings
+    
+    We embed this COMPLETE config, not individual pieces we try to capture ourselves.
     
     Usage:
         class MyCheckpoint(ModelCheckpoint, ConfigEmbeddingMixin):
@@ -75,7 +91,7 @@ class ConfigEmbeddingMixin:
             
         metadata = checkpoint.get(metadata_key, {})
         
-        # Add basic metadata
+        # Add basic metadata (these are our custom metadata for resume)
         metadata.update({
             'timestamp': time.time(),
             'original_command': self._original_argv,
@@ -84,18 +100,19 @@ class ConfigEmbeddingMixin:
             'current_epoch': trainer.current_epoch,
         })
         
-        # Add W&B run ID if available
+        # Add W&B run ID if available (custom metadata for resume)
         wandb_run_id = self._get_wandb_run_id()
         if wandb_run_id:
             metadata['wandb_run_id'] = wandb_run_id
             logger.info(f"📋 Storing W&B run ID in checkpoint: {wandb_run_id}")
         
-        # Embed Lightning's config.yaml directly - MANDATORY for reproducibility
-        lightning_config = self._capture_lightning_config(trainer)
+        # CRITICAL: Embed Lightning's auto-generated config.yaml ONLY
+        # This is the COMPLETE merged configuration including trainer_defaults
+        lightning_config = self._capture_lightning_auto_config(trainer)
         if not lightning_config:
             logger.warning(
-                "Could not capture Lightning's config. "
-                "Checkpoint will not be self-contained."
+                "Could not capture Lightning's auto-generated config.yaml. "
+                "Checkpoint will not be self-contained. This may cause issues during resume."
             )
             return
         
@@ -127,40 +144,65 @@ class ConfigEmbeddingMixin:
         # Config metadata is automatically available in checkpoint
         # No specific restoration needed for config content
     
-    def _capture_lightning_config(self, trainer) -> Optional[str]:
+    def _capture_lightning_auto_config(self, trainer) -> Optional[str]:
         """
-        Capture Lightning's configuration with config.yaml file as primary source.
+        Capture Lightning's auto-generated config.yaml file ONLY.
+        
+        Lightning automatically saves the COMPLETE merged configuration 
+        (trainer_defaults + config files) to {log_dir}/config.yaml.
+        
+        This is our SINGLE SOURCE OF TRUTH for embedded config.
         
         Returns:
-            YAML string of Lightning's config, or None if not available
+            YAML string of Lightning's complete config, or None if not available
         """
-        # First, try to load from the trainer's config_path if available
-        config_path = self._get_config_path_from_cli(trainer)
-        if config_path and os.path.exists(config_path):
+        # Get the log directory from trainer's logger
+        log_dir = self._get_lightning_log_dir(trainer)
+        if not log_dir:
+            logger.warning("Cannot determine Lightning log directory. Config embedding will fail.")
+            return None
+        
+        # Lightning saves the complete config as config.yaml in the log directory
+        lightning_config_path = Path(log_dir) / "config.yaml"
+        
+        if lightning_config_path.exists():
             try:
-                with open(config_path, 'r') as f:
-                    # Return the raw YAML content
+                with open(lightning_config_path, 'r') as f:
                     config_yaml = f.read()
-                    logger.info(f"📋 Captured config from '{config_path}' for embedding")
+                    logger.info(f"📋 Captured COMPLETE config from Lightning's auto-generated '{lightning_config_path}'")
                     return config_yaml
             except Exception as e:
-                logger.warning(f"⚠️ Failed to read config from '{config_path}': {e}")
+                logger.warning(f"⚠️ Failed to read Lightning's config from '{lightning_config_path}': {e}")
+        else:
+            logger.warning(f"⚠️ Lightning's auto-generated config not found at '{lightning_config_path}'")
         
-        logger.warning("No config source found for embedding.")
+        logger.warning("No Lightning auto-generated config found for embedding.")
         return None
 
-    def _get_config_path_from_cli(self, trainer) -> Optional[str]:
-        """Attempt to get the config path from the LightningCLI object."""
+    def _get_lightning_log_dir(self, trainer) -> Optional[str]:
+        """
+        Get Lightning's log directory where it saves config.yaml.
+        
+        Returns:
+            Path to Lightning's log directory, or None if not available
+        """
         try:
-            argv = self._original_argv
-            for i, arg in enumerate(argv):
-                if arg in ['--config', '-c'] and i + 1 < len(argv):
-                    return argv[i + 1]
-                elif arg.startswith('--config='):
-                    return arg.split('=', 1)[1]
+            # Try to get log_dir from trainer's logger
+            if hasattr(trainer, 'logger') and trainer.logger is not None:
+                if hasattr(trainer.logger, 'log_dir') and trainer.logger.log_dir:
+                    return trainer.logger.log_dir
+                elif hasattr(trainer.logger, 'save_dir') and trainer.logger.save_dir:
+                    # Some loggers use save_dir instead of log_dir
+                    return trainer.logger.save_dir
+            
+            # Fallback to trainer's default_root_dir
+            if hasattr(trainer, 'default_root_dir') and trainer.default_root_dir:
+                return trainer.default_root_dir
+            
+            logger.warning("Could not determine Lightning log directory from trainer")
             return None
         except Exception as e:
-            logger.warning(f"Failed to extract config path: {e}")
+            logger.warning(f"Failed to get Lightning log directory: {e}")
             return None
     
     def _calculate_config_hash(self, config_content: str) -> str:
@@ -168,11 +210,20 @@ class ConfigEmbeddingMixin:
         return hashlib.sha256(config_content.encode()).hexdigest()
     
     def _get_wandb_run_id(self) -> Optional[str]:
-        """Extract W&B run ID if available."""
+        """Extract W&B run ID from trainer's logger if available."""
         try:
-            import wandb
-            if wandb.run and wandb.run.id:
-                return wandb.run.id
-        except ImportError:
-            pass
-        return None
+            if hasattr(self, '_trainer_ref') and self._trainer_ref:
+                trainer = self._trainer_ref
+                if hasattr(trainer, 'logger') and trainer.logger:
+                    # Check for WandB logger
+                    if hasattr(trainer.logger, 'experiment') and hasattr(trainer.logger.experiment, 'id'):
+                        return trainer.logger.experiment.id
+                    # Check for multi-logger case
+                    elif hasattr(trainer.logger, 'experiment') and isinstance(trainer.logger.experiment, list):
+                        for exp in trainer.logger.experiment:
+                            if hasattr(exp, 'id'):
+                                return exp.id
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to extract W&B run ID: {e}")
+            return None
