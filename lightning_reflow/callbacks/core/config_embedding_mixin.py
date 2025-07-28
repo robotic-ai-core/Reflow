@@ -21,6 +21,7 @@ from pathlib import Path
 import sys
 import logging
 import os
+import yaml
 
 from lightning.pytorch import Trainer, LightningModule
 
@@ -119,7 +120,7 @@ class ConfigEmbeddingMixin:
         metadata['embedded_config_content'] = lightning_config
         metadata['config_hash'] = self._calculate_config_hash(lightning_config)
         metadata['config_source'] = 'lightning_auto_generated'
-        logger.info(f"📝 Embedded Lightning's auto-generated config.yaml ({len(lightning_config)} chars)")
+        logger.debug(f"📝 Embedded Lightning's auto-generated config.yaml ({len(lightning_config)} chars)")
         
         checkpoint[metadata_key] = metadata
     
@@ -144,7 +145,7 @@ class ConfigEmbeddingMixin:
         # Config metadata is automatically available in checkpoint
         # No specific restoration needed for config content
     
-    def _capture_lightning_auto_config(self, trainer) -> Optional[str]:
+    def _capture_lightning_auto_config(self, trainer: Trainer) -> Optional[str]:
         """
         Capture Lightning's auto-generated config.yaml file ONLY.
         
@@ -154,32 +155,39 @@ class ConfigEmbeddingMixin:
         This is our SINGLE SOURCE OF TRUTH for embedded config.
         
         Returns:
-            YAML string of Lightning's complete config, or None if not available
+            Raw YAML string content of Lightning's complete config, or None if not available
         """
-        # Get the log directory from trainer's logger
-        log_dir = self._get_lightning_log_dir(trainer)
-        if not log_dir:
-            logger.warning("Cannot determine Lightning log directory. Config embedding will fail.")
+        try:
+            # Step 1: Find Lightning's log directory
+            lightning_log_dir = self._get_lightning_log_dir(trainer)
+            if not lightning_log_dir:
+                logger.warning("ConfigEmbeddingMixin: Could not find Lightning log directory")
+                return None
+            
+            # Step 2: Read Lightning's auto-generated config.yaml as raw string
+            config_path = lightning_log_dir / "config.yaml"
+            if not config_path.exists():
+                logger.warning(f"ConfigEmbeddingMixin: Lightning config not found at {config_path}")
+                return None
+            
+            with open(config_path, 'r') as f:
+                lightning_config_string = f.read().strip()
+            
+            if not lightning_config_string:
+                logger.warning("ConfigEmbeddingMixin: Lightning config is empty")
+                return None
+            
+            # Step 3: Return raw Lightning config string (preserve exact formatting)
+            logger.debug(f"📋 Captured COMPLETE config from Lightning's auto-generated 'config.yaml'")
+            logger.debug(f"📝 Embedded Lightning's auto-generated config.yaml ({len(lightning_config_string)} chars)")
+            
+            return lightning_config_string
+            
+        except Exception as e:
+            logger.error(f"ConfigEmbeddingMixin: Failed to capture Lightning auto config: {e}")
             return None
-        
-        # Lightning saves the complete config as config.yaml in the log directory
-        lightning_config_path = Path(log_dir) / "config.yaml"
-        
-        if lightning_config_path.exists():
-            try:
-                with open(lightning_config_path, 'r') as f:
-                    config_yaml = f.read()
-                    logger.info(f"📋 Captured COMPLETE config from Lightning's auto-generated '{lightning_config_path}'")
-                    return config_yaml
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to read Lightning's config from '{lightning_config_path}': {e}")
-        else:
-            logger.warning(f"⚠️ Lightning's auto-generated config not found at '{lightning_config_path}'")
-        
-        logger.warning("No Lightning auto-generated config found for embedding.")
-        return None
 
-    def _get_lightning_log_dir(self, trainer) -> Optional[str]:
+    def _get_lightning_log_dir(self, trainer: Trainer) -> Optional[Path]:
         """
         Get Lightning's log directory where it saves config.yaml.
         
@@ -190,14 +198,14 @@ class ConfigEmbeddingMixin:
             # Try to get log_dir from trainer's logger
             if hasattr(trainer, 'logger') and trainer.logger is not None:
                 if hasattr(trainer.logger, 'log_dir') and trainer.logger.log_dir:
-                    return trainer.logger.log_dir
+                    return Path(trainer.logger.log_dir)
                 elif hasattr(trainer.logger, 'save_dir') and trainer.logger.save_dir:
                     # Some loggers use save_dir instead of log_dir
-                    return trainer.logger.save_dir
+                    return Path(trainer.logger.save_dir)
             
             # Fallback to trainer's default_root_dir
             if hasattr(trainer, 'default_root_dir') and trainer.default_root_dir:
-                return trainer.default_root_dir
+                return Path(trainer.default_root_dir)
             
             logger.warning("Could not determine Lightning log directory from trainer")
             return None
@@ -226,4 +234,4 @@ class ConfigEmbeddingMixin:
             return None
         except Exception as e:
             logger.warning(f"Failed to extract W&B run ID: {e}")
-            return None
+        return None
