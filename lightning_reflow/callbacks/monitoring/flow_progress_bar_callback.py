@@ -502,11 +502,12 @@ class FlowProgressBarCallback(LearningRateMonitor):
                 interval_desc = f"Epoch {trainer.current_epoch + 1}"
             
             # Create new interval bar - use tqdm.tqdm to ensure we get the right class
+            # IMPORTANT: Always start from 0 after validation to show proper progress
             from tqdm import tqdm as tqdm_cls
             
             self.current_interval_bar = tqdm_cls(
                 desc=interval_desc + self._get_interval_pause_status_suffix(),
-                initial=0,
+                initial=0,  # Always start fresh after validation
                 total=interval_total,
                 position=self.process_position + 1,
                 dynamic_ncols=True,
@@ -518,6 +519,14 @@ class FlowProgressBarCallback(LearningRateMonitor):
                 miniters=1,
                 mininterval=0.1
             )
+            
+            # CRITICAL FIX: Update _last_validation_batch to align with the reset interval bar
+            # This ensures _calculate_interval_progress starts from 0 for the new interval
+            if val_interval_steps:
+                accumulate_grad_batches = getattr(trainer, 'accumulate_grad_batches', 1)
+                current_training_batch = trainer.global_step * accumulate_grad_batches
+                # Set _last_validation_batch to the current position so the next progress calculation starts from 0
+                self._last_validation_batch = current_training_batch
             
             # Only override bar format if we truly have no total
             if interval_total is None or interval_total == float('inf'):
