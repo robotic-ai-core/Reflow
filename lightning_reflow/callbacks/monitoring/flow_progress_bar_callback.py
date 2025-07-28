@@ -332,64 +332,44 @@ class FlowProgressBarCallback(LearningRateMonitor):
             bar.n = progress
             bar.refresh()
 
+    def _get_total_training_batches(self, trainer: "pl.Trainer", current_batch_idx: Optional[int] = None) -> int:
+        """
+        Calculate total training batches processed so far.
+        
+        Args:
+            trainer: PyTorch Lightning trainer
+            current_batch_idx: Current batch index within epoch (for real-time progress)
+            
+        Returns:
+            Total number of training batches processed
+        """
+        # Use epoch-based calculation for accurate batch-by-batch progress
+        if (current_batch_idx is not None and 
+            hasattr(trainer, 'num_training_batches') and 
+            trainer.num_training_batches != float('inf')):
+            # Accurate calculation: epoch * batches_per_epoch + current_batch
+            total_batches = trainer.current_epoch * trainer.num_training_batches + (current_batch_idx + 1)
+            return total_batches
+        else:
+            # Fallback: use global_step approach (updates per gradient accumulation cycle)
+            accumulate_grad_batches = getattr(trainer, 'accumulate_grad_batches', 1)
+            return trainer.global_step * accumulate_grad_batches
+    
     def _calculate_interval_progress(self, trainer: "pl.Trainer", batch_idx: int) -> int:
+        """
+        Calculate current progress within the validation interval.
+        
+        Uses modulo arithmetic for simple, accurate progress calculation.
+        """
         val_interval_steps = self._get_val_check_interval_steps()
         
         if val_interval_steps:
-            # For epoch-based validation, calculate steps until next validation
-            check_val_every_n_epoch = getattr(trainer, 'check_val_every_n_epoch', None)
-            if check_val_every_n_epoch:
-                # Calculate which epoch we're in within the validation interval
-                current_epoch = trainer.current_epoch
-                epochs_since_last_val = current_epoch % check_val_every_n_epoch
-                
-                # Get steps per epoch
-                num_training_batches = None
-                if hasattr(trainer, 'num_training_batches') and trainer.num_training_batches != float('inf'):
-                    num_training_batches = trainer.num_training_batches
-                
-                if num_training_batches:
-                    # Calculate steps completed in current epoch
-                    steps_in_current_epoch = batch_idx + 1
-                    
-                    # Calculate total steps completed since last validation
-                    steps_since_validation = (epochs_since_last_val * num_training_batches) + steps_in_current_epoch
-                    
-                    # For display: show progress within the current validation interval
-                    return min(steps_since_validation, val_interval_steps)
-            else:
-                # For step-based validation intervals (val_check_interval counts training batches)
-                # Calculate current training batch number
-                num_training_batches = None
-                if hasattr(trainer, 'num_training_batches') and trainer.num_training_batches != float('inf'):
-                    num_training_batches = trainer.num_training_batches
-                
-                if num_training_batches:
-                    # Calculate absolute training batch number
-                    current_training_batch = trainer.current_epoch * num_training_batches + batch_idx + 1
-                    
-                    # Calculate batches since last validation
-                    batches_since_validation = current_training_batch - self._last_validation_batch
-                    
-                    # VALIDATION BOUNDARY PAUSE FIX:
-                    # If batches_since_validation equals or exceeds val_interval_steps,
-                    # it means we've completed a full interval and are starting fresh
-                    if batches_since_validation >= val_interval_steps:
-                        # We're at the start of a new interval after validation
-                        # Reset to show we're starting from 0 in this new interval
-                        expected_validations = current_training_batch // val_interval_steps
-                        self._last_validation_batch = expected_validations * val_interval_steps
-                        batches_since_validation = current_training_batch - self._last_validation_batch
-                    
-                    # Clamp to interval bounds to prevent exceeding total
-                    return min(batches_since_validation, val_interval_steps)
-                else:
-                    # Fallback to batch_idx within current epoch if num_training_batches unavailable
-                    return min(batch_idx + 1, val_interval_steps)
+            # Pass batch_idx for smooth batch-by-batch updates
+            total_training_batches = self._get_total_training_batches(trainer, current_batch_idx=batch_idx)
+            return total_training_batches % val_interval_steps
         else:
             # For pure epoch-based training without validation intervals
             # progress is the batch within the current epoch
-            # batch_idx is 0-based, so add 1 for display
             return batch_idx + 1
 
     def on_train_batch_end(
@@ -424,9 +404,8 @@ class FlowProgressBarCallback(LearningRateMonitor):
         if not self.is_enabled: 
             return
         
-        # Track when validation actually occurs to handle drift (in training batches)
-        accumulate_grad_batches = getattr(trainer, 'accumulate_grad_batches', 1)
-        self._last_validation_batch = trainer.global_step * accumulate_grad_batches
+        # Track when validation actually occurs (for state persistence)
+        self._last_validation_batch = self._get_total_training_batches(trainer)
         
         # Configure bar for validation - only update totals, not description
         if self.current_interval_bar is not None:
@@ -520,13 +499,7 @@ class FlowProgressBarCallback(LearningRateMonitor):
                 mininterval=0.1
             )
             
-            # CRITICAL FIX: Update _last_validation_batch to align with the reset interval bar
-            # This ensures _calculate_interval_progress starts from 0 for the new interval
-            if val_interval_steps:
-                accumulate_grad_batches = getattr(trainer, 'accumulate_grad_batches', 1)
-                current_training_batch = trainer.global_step * accumulate_grad_batches
-                # Set _last_validation_batch to the current position so the next progress calculation starts from 0
-                self._last_validation_batch = current_training_batch
+            # Note: No need to update _last_validation_batch since we use modulo for progress calculation
             
             # Only override bar format if we truly have no total
             if interval_total is None or interval_total == float('inf'):
@@ -831,17 +804,20 @@ class FlowProgressBarCallback(LearningRateMonitor):
         if self._progress_bar_initialized:
             return
             
-        # Initialize validation tracking
-        val_interval = self._get_val_check_interval_steps()
-        if trainer.global_step > 0 and val_interval:
-            # Calculate current training batch from global_step (approximate)
-            accumulate_grad_batches = getattr(trainer, 'accumulate_grad_batches', 1)
-            approx_training_batch = trainer.global_step * accumulate_grad_batches
-            self._last_validation_batch = (approx_training_batch // val_interval) * val_interval
-            self._validation_count = approx_training_batch // val_interval
-        else:
-            self._last_validation_batch = 0
-            self._validation_count = 0
+        # Initialize validation tracking (only if not already restored from checkpoint)
+        # Note: _last_validation_batch is mainly kept for state persistence; 
+        # actual progress calculation uses modulo arithmetic
+        if not hasattr(self, '_validation_count') or self._validation_count is None:
+            val_interval = self._get_val_check_interval_steps()
+            if trainer.global_step > 0 and val_interval:
+                # Simple initialization for state tracking (not used in progress calculation)
+                total_training_batches = self._get_total_training_batches(trainer)
+                self._last_validation_batch = (total_training_batches // val_interval) * val_interval
+                self._validation_count = total_training_batches // val_interval
+            else:
+                # Initialize to 0 (new training or no validation interval)
+                self._last_validation_batch = 0
+                self._validation_count = 0
 
         total_steps_val = self._get_total_steps()
         logger.info(f"FlowProgressBar: Initializing with trainer.global_step={trainer.global_step}")
@@ -886,9 +862,16 @@ class FlowProgressBarCallback(LearningRateMonitor):
             interval_total = trainer.num_training_batches
             interval_desc = f"Epoch {self._trainer.current_epoch + 1}"
         
+        # Calculate initial position for interval bar during resume
+        initial_interval_progress = 0
+        if val_interval_steps and trainer.global_step > 0:
+            # Use consistent calculation method
+            total_training_batches = self._get_total_training_batches(trainer)
+            initial_interval_progress = total_training_batches % val_interval_steps
+        
         self.current_interval_bar = tqdm(
             desc=interval_desc,
-            initial=0, 
+            initial=initial_interval_progress,  # Start from current position in interval
             total=interval_total,
             position=self.process_position + 1, 
             dynamic_ncols=True,
