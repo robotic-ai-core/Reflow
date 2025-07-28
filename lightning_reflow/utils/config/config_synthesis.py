@@ -92,17 +92,14 @@ def convert_config_dict_to_dataclasses(config_dict: Dict[str, Any]) -> Dict[str,
     import logging
     logger = logging.getLogger(__name__)
     
-    try:
-        from modules.utils.config.config import (
-            GenerativeBackboneConfig, UNetConfig, OptimizerConfig, 
-            LoggingConfig, FlowMatchingProcessSamplerConfig, 
-            DiffusionProcessSamplerConfig, MultiModalEncoderConfig,
-            ModalityEncoderConfig, EmbeddingAdaptorConfig, ODESolverConfig
+    # Reflow package is independent - no external modules.* dependencies allowed
+    # Advanced config synthesis requires the full Yggdrasil environment
+    if any(key in config_dict for key in ['backbone', 'condition_encoder', 'optimizer', 'logging']):
+        raise ImportError(
+            "Advanced config synthesis (backbone, condition_encoder, optimizer, logging) requires "
+            "running within the full Yggdrasil environment with modules.* available. "
+            "For external usage, use simpler config dictionaries or disable config synthesis."
         )
-    except ImportError:
-        logger = get_logger(__name__)
-        logger.warning("Could not import config classes from modules.utils.config")
-        return config_dict
     
     converted_config = config_dict.copy()
     
@@ -135,10 +132,11 @@ def convert_config_dict_to_dataclasses(config_dict: Dict[str, Any]) -> Dict[str,
         except Exception as e:
             logger.warning(f"Failed to convert logging config: {e}")
     
+    # This code should never be reached due to the fail-fast check above
     # Convert backbone config
     if 'backbone' in converted_config and isinstance(converted_config['backbone'], dict):
+        raise RuntimeError("Backbone config synthesis should have been caught by fail-fast check")
         try:
-            from modules.utils.config.config import GenerativeBackboneConfig, UNetConfig
             backbone_dict = converted_config['backbone']
             backbone_type = backbone_dict.get('type', 'unet')
             
@@ -192,13 +190,8 @@ def convert_config_dict_to_dataclasses(config_dict: Dict[str, Any]) -> Dict[str,
             if encoder_type == 'multimodal':
                 converted_config['condition_encoder'] = MultiModalEncoderConfig(**encoder_dict)
             elif encoder_type == 'pretrained_text':
-                # Import TextEncoderConfig for text encoders
-                try:
-                    from modules.utils.config.config import TextEncoderConfig
-                    converted_config['condition_encoder'] = TextEncoderConfig(**encoder_dict)
-                except ImportError:
-                    # Fallback - just use the dict
-                    logger.warning("TextEncoderConfig not available, keeping as dict")
+                # This should never be reached due to fail-fast check
+                raise RuntimeError("TextEncoder config synthesis should have been caught by fail-fast check")
             elif encoder_type:
                 # For single modality encoders
                 converted_config['condition_encoder'] = ModalityEncoderConfig(**encoder_dict)

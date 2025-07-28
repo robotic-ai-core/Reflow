@@ -198,9 +198,9 @@ class LightningReflowCLI(LightningCLI):
     def _register_trainer_config_state(self, trainer):
         """Register TrainerConfigState manager for systematic trainer config preservation."""
         try:
-            from modules.utils.checkpoint.manager_state import register_manager
-            from modules.utils.checkpoint.trainer_config_state import TrainerConfigState
-            from modules.utils.checkpoint.datamodule_state import DataModuleState
+            from lightning_reflow.utils.checkpoint.manager_state import register_manager
+            from lightning_reflow.utils.checkpoint.trainer_config_state import TrainerConfigState
+            from lightning_reflow.utils.checkpoint.datamodule_state import DataModuleState
             
             # Create and register trainer config state manager
             trainer_config_state = TrainerConfigState(trainer)
