@@ -340,17 +340,17 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         trainer.save_checkpoint(checkpoint_path)
         
         # Add config metadata if the mixin is available
-        try:
-            # Load the saved checkpoint to add metadata
-            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        # try:
+        #     # Load the saved checkpoint to add metadata
+        #     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
             
-            # Add config metadata using the mixin
-            self.add_config_metadata(trainer, pl_module, checkpoint)
+        #     # Add config metadata using the mixin
+        #     self.add_config_metadata(trainer, pl_module, checkpoint)
             
-            # Save the checkpoint back with metadata
-            torch.save(checkpoint, checkpoint_path)
-        except Exception as e:
-            print(f"Warning: Could not add config metadata to checkpoint: {e}")
+        #     # Save the checkpoint back with metadata
+        #     torch.save(checkpoint, checkpoint_path)
+        # except Exception as e:
+        #     print(f"Warning: Could not add config metadata to checkpoint: {e}")
 
     def _execute_immediate_pause(self, trainer: Trainer, pl_module: LightningModule):
         should_upload = self._state_machine.is_upload_requested()

@@ -1027,12 +1027,15 @@ class FlowProgressBarCallback(LearningRateMonitor):
                         print(f"FlowProgressBarCallback: Incompatible state version {version}, expected 1.0.0")
                         return False
                     
-                    # Validate required fields
-                    required_fields = ['validation_count', 'last_validation_step']
-                    for field in required_fields:
-                        if field not in state:
-                            print(f"FlowProgressBarCallback: Missing required field in state: {field}")
-                            return False
+                    # Validate required fields (with backward compatibility)
+                    if 'validation_count' not in state:
+                        print(f"FlowProgressBarCallback: Missing required field in state: validation_count")
+                        return False
+                        
+                    # Check for either new or old field name (backward compatibility)
+                    if 'last_validation_batch' not in state and 'last_validation_step' not in state:
+                        print(f"FlowProgressBarCallback: Missing required field in state: last_validation_batch (or legacy last_validation_step)")
+                        return False
                     
                     return True
             

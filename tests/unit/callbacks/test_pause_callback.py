@@ -256,6 +256,42 @@ class TestPauseCallback:
         # Should be in paused state (odd number of toggles)
         assert callback.is_pause_scheduled()
 
+    def test_add_config_metadata_called_once_during_pause(self, temp_dir, simple_model):
+        """Test that add_config_metadata is called only once during pause."""
+        checkpoint_dir = temp_dir / "checkpoints"
+        callback = PauseCallback(checkpoint_dir=str(checkpoint_dir))
+        
+        # Mock trainer
+        mock_trainer = Mock()
+        mock_trainer.model = simple_model
+        mock_trainer.current_epoch = 5
+        mock_trainer.global_step = 100
+        mock_trainer.state_dict = Mock(return_value={'epoch': 5})
+        mock_trainer.is_global_zero = True
+        
+        # Mock save_checkpoint to create a dummy file
+        def mock_save_checkpoint(filepath):
+            # Create a dummy checkpoint with a more realistic size
+            checkpoint = {
+                'state_dict': simple_model.state_dict(),
+                'epoch': 5,
+                'global_step': 100,
+            }
+            torch.save(checkpoint, filepath)
+        
+        mock_trainer.save_checkpoint = mock_save_checkpoint
+        
+        # Mock add_config_metadata to track calls
+        with patch.object(callback, 'add_config_metadata') as mock_add_config_metadata:
+            # Schedule pause
+            callback._state_machine.toggle_pause()
+            
+            # Execute pause
+            callback._execute_validation_boundary_pause(mock_trainer, simple_model)
+            
+            # Verify add_config_metadata was called exactly once
+            mock_add_config_metadata.assert_called_once()
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
