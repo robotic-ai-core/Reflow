@@ -381,11 +381,10 @@ class LightningReflow:
     
     def _create_trainer(self) -> pl.Trainer:
         """Create trainer from configuration."""
-        # Start with LightningReflow's safe defaults
-        trainer_config = {
-            "enable_progress_bar": False,  # Disable Lightning's default to prevent conflicts with FlowProgressBarCallback
-            **self.trainer_defaults  # User defaults can override our safe defaults
-        }
+        from .shared_config import get_trainer_defaults
+        
+        # Start with shared defaults + user defaults
+        trainer_config = get_trainer_defaults(self.trainer_defaults)
         
         # Merge with config file trainer settings
         config_trainer = self.config_loader.get_section("trainer", {})
@@ -448,6 +447,8 @@ class LightningReflow:
     
     def _prepare_callbacks(self, config_callbacks: List[Any]) -> List[Callback]:
         """Prepare the full list of callbacks."""
+        from .shared_config import ensure_essential_callbacks
+        
         all_callbacks = []
         
         # Add callbacks from trainer config
@@ -463,43 +464,12 @@ class LightningReflow:
         # Add additional callbacks provided programmatically
         all_callbacks.extend(self.additional_callbacks)
         
-        # Ensure PauseCallback is present for progress bar functionality
-        # This is critical for user experience during both fit and resume operations
-        self._ensure_pause_callback(all_callbacks)
+        # Ensure essential callbacks are present using shared logic
+        all_callbacks = ensure_essential_callbacks(all_callbacks)
         
         return all_callbacks
     
-    def _ensure_pause_callback(self, callbacks: List[Callback]) -> None:
-        """Ensure PauseCallback is present in callbacks list for progress bar functionality."""
-        try:
-            from ..callbacks.pause import PauseCallback
-            
-            # Check if PauseCallback is already present
-            has_pause_callback = any(isinstance(cb, PauseCallback) for cb in callbacks)
-            
-            if not has_pause_callback:
-                # Create and add PauseCallback with sensible defaults
-                pause_callback = PauseCallback(
-                    checkpoint_dir='pause_checkpoints',
-                    enable_pause=True,
-                    pause_key='p',
-                    upload_key='w',
-                    debounce_interval=0.3,
-                    refresh_rate=1,
-                    bar_colour='#fcac17',  # Orange progress bars
-                    global_bar_metrics=['*lr*'],
-                    interval_bar_metrics=['loss', 'train/loss', 'train_loss'],  # Support all naming conventions
-                    logging_interval='step',
-                    show_pause_countdown=False  # Disabled by default to save screen space
-                )
-                
-                callbacks.append(pause_callback)
-                logger.info("✅ Automatically added PauseCallback for progress bar functionality")
-            
-        except ImportError as e:
-            logger.warning(f"Could not import PauseCallback: {e}")
-        except Exception as e:
-            logger.warning(f"Failed to ensure PauseCallback: {e}")
+
     
     def _create_callback_from_config(self, callback_config: Dict[str, Any]) -> Optional[Callback]:
         """Create a callback from configuration."""

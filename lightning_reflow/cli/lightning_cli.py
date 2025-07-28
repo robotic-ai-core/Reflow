@@ -27,24 +27,8 @@ CONFIG_ARG = '--config'
 TEMP_CONFIG_PREFIX = 'resume_config_'
 TEMP_CONFIG_SUFFIX = '.yaml'
 
-# Default callback configurations
-DEFAULT_PAUSE_CALLBACK_CONFIG = {
-    'checkpoint_dir': 'pause_checkpoints',
-    'enable_pause': True,
-    'pause_key': 'p',
-    'upload_key': 'w',
-    'debounce_interval': 0.3,
-    'refresh_rate': 1,
-    'bar_colour': '#fcac17',
-    'global_bar_metrics': ['*lr*'],
-    'interval_bar_metrics': ['loss', 'train/loss', 'train_loss'],
-    'logging_interval': 'step',
-}
-
-DEFAULT_STEP_LOGGER_CONFIG = {
-    'train_prog_bar_metrics': ['loss', 'train/loss'],
-    'val_prog_bar_metrics': ['val_loss', 'val/val_loss']
-}
+# Import shared configurations to eliminate duplication
+from ..core.shared_config import DEFAULT_PAUSE_CALLBACK_CONFIG, DEFAULT_STEP_LOGGER_CONFIG
 
 
 class LightningReflowCLI(LightningCLI):
@@ -94,41 +78,25 @@ class LightningReflowCLI(LightningCLI):
         self._add_essential_callbacks()
     
     def _add_essential_callbacks(self) -> None:
-        """Add essential callbacks if not already present."""
+        """Add essential callbacks if not already present using shared logic."""
         if not hasattr(self, 'trainer') or not self.trainer:
             return
-            
-        self._add_step_output_logger()
-        self._add_pause_callback()
-    
-    def _add_pause_callback(self) -> None:
-        """Add PauseCallback if not already present."""
-        if not hasattr(self, 'trainer') or not self.trainer:
-            return
-            
-        from ..callbacks.pause import PauseCallback
         
-        has_pause_callback = any(isinstance(cb, PauseCallback) for cb in self.trainer.callbacks)
-        if not has_pause_callback:
-            pause_callback = PauseCallback(**DEFAULT_PAUSE_CALLBACK_CONFIG)
-            self.trainer.callbacks.append(pause_callback)
-            logger.info("✅ Added PauseCallback for progress bar functionality")
-    
-    def _add_step_output_logger(self) -> None:
-        """Add StepOutputLoggerCallback if not already present."""
-        if not hasattr(self, 'trainer') or not self.trainer:
-            return
-            
-        from ..callbacks.logging import StepOutputLoggerCallback
+        from ..core.shared_config import ensure_essential_callbacks
         
-        has_step_logger = any(isinstance(cb, StepOutputLoggerCallback) for cb in self.trainer.callbacks)
-        if not has_step_logger:
-            step_logger = StepOutputLoggerCallback(**DEFAULT_STEP_LOGGER_CONFIG)
-            self.trainer.callbacks.append(step_logger)
-            logger.info("✅ Added StepOutputLoggerCallback for metrics logging")
+        # Use shared logic to ensure essential callbacks
+        self.trainer.callbacks = ensure_essential_callbacks(self.trainer.callbacks, self.trainer)
     
     def instantiate_trainer(self, **kwargs):
-        """Override to set CLI reference in trainer for ConfigEmbeddingMixin compatibility."""
+        """Override to apply shared defaults and set CLI reference in trainer."""
+        from ..core.shared_config import get_trainer_defaults
+        
+        # Apply shared trainer defaults before calling parent
+        current_trainer_config = self.config.get('trainer', {})
+        merged_config = get_trainer_defaults(current_trainer_config)
+        self.config['trainer'] = merged_config
+        logger.info("✅ Applied shared trainer defaults including enable_progress_bar=False")
+        
         # Call parent implementation to create trainer
         trainer = super().instantiate_trainer(**kwargs)
         
