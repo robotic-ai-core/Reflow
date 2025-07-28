@@ -49,7 +49,19 @@ def get_trainer_defaults(user_defaults: Dict[str, Any] = None) -> Dict[str, Any]
     trainer_config = SHARED_TRAINER_DEFAULTS.copy()
     
     if user_defaults:
-        trainer_config.update(user_defaults)
+        # Check for progress bar override that could cause conflicts
+        if 'enable_progress_bar' in user_defaults and user_defaults['enable_progress_bar'] is True:
+            logger.warning("⚠️ User is trying to enable Lightning's default progress bar!")
+            logger.warning("⚠️ This will conflict with Reflow's custom progress bar (PauseCallback).")
+            logger.warning("⚠️ Keeping enable_progress_bar=False to prevent UI conflicts.")
+            logger.warning("⚠️ If you need to disable progress bars entirely, set enable_pause=False in PauseCallback config.")
+            
+            # Apply all user defaults except the conflicting progress bar setting
+            user_defaults_safe = user_defaults.copy()
+            user_defaults_safe.pop('enable_progress_bar')
+            trainer_config.update(user_defaults_safe)
+        else:
+            trainer_config.update(user_defaults)
     
     return trainer_config
 

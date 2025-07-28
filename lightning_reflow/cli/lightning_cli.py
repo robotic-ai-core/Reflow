@@ -93,6 +93,18 @@ class LightningReflowCLI(LightningCLI):
         
         # Apply shared trainer defaults before calling parent
         current_trainer_config = self.config.get('trainer', {})
+        
+        # Check for progress bar conflicts in CLI config
+        if current_trainer_config.get('enable_progress_bar') is True:
+            logger.warning("⚠️ CLI config is trying to enable Lightning's default progress bar!")
+            logger.warning("⚠️ This will conflict with Reflow's custom progress bar (PauseCallback).")
+            logger.warning("⚠️ Ignoring enable_progress_bar=true from CLI config to prevent UI conflicts.")
+            logger.warning("⚠️ If you need to disable progress bars entirely, set enable_pause=False in PauseCallback config.")
+            
+            # Remove the conflicting setting
+            current_trainer_config = current_trainer_config.copy()
+            current_trainer_config.pop('enable_progress_bar', None)
+        
         merged_config = get_trainer_defaults(current_trainer_config)
         self.config['trainer'] = merged_config
         logger.info("✅ Applied shared trainer defaults including enable_progress_bar=False")

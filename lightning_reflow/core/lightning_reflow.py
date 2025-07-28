@@ -385,11 +385,27 @@ class LightningReflow:
         
         # Start with shared defaults + user defaults
         trainer_config = get_trainer_defaults(self.trainer_defaults)
+        logger.info(f"🔧 Initial trainer config (shared + user defaults): enable_progress_bar={trainer_config.get('enable_progress_bar')}")
         
         # Merge with config file trainer settings
         config_trainer = self.config_loader.get_section("trainer", {})
         if config_trainer:
-            trainer_config.update(config_trainer)
+            # Log before merging to help debug overrides
+            config_progress_bar = config_trainer.get('enable_progress_bar')
+            if config_progress_bar is True:
+                logger.warning(f"⚠️ Config file is trying to enable Lightning's default progress bar!")
+                logger.warning("⚠️ This will conflict with Reflow's custom progress bar (PauseCallback).")
+                logger.warning("⚠️ Ignoring enable_progress_bar=true from config to prevent UI conflicts.")
+                logger.warning("⚠️ If you need to disable progress bars entirely, set enable_pause=False in PauseCallback config.")
+                
+                # Apply config settings but keep our progress bar setting
+                config_trainer_safe = config_trainer.copy()
+                config_trainer_safe.pop('enable_progress_bar', None)
+                trainer_config.update(config_trainer_safe)
+            else:
+                trainer_config.update(config_trainer)
+            
+            logger.info(f"🔧 Final trainer config (after config file merge): enable_progress_bar={trainer_config.get('enable_progress_bar')}")
         
         # Handle callbacks
         callbacks = self._prepare_callbacks(trainer_config.get("callbacks", []))
