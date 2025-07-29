@@ -6,6 +6,7 @@ for training, with support for configuration loading, callbacks, and resumption.
 """
 
 import logging
+import os
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union, Type, Callable
 import lightning.pytorch as pl
@@ -227,6 +228,255 @@ class LightningReflow:
             logger.error(f"❌ Resume failed: {e}")
             logger.error(f"Traceback:\n{traceback.format_exc()}")
             raise
+    
+    def resume_cli(
+        self,
+        resume_source: str,
+        config_overrides: Optional[List[Union[str, Path]]] = None,
+        use_wandb_config: bool = False,
+        entity: Optional[str] = None,
+        project: Optional[str] = None,
+        extra_cli_args: Optional[List[str]] = None
+    ) -> None:
+        """
+        Resume training from a checkpoint using CLI subprocess approach.
+        
+        This method consolidates the CLI resume logic while preserving the subprocess
+        approach that allows leveraging Lightning CLI features. It prepares the resume
+        configuration and spawns a subprocess with the fit command.
+        
+        Args:
+            resume_source: Source to resume from (local path or W&B artifact)
+            config_overrides: List of configuration files to override settings
+            use_wandb_config: Whether to use config from W&B run (for W&B artifacts)
+            entity: W&B entity (for artifact resumption)
+            project: W&B project (for artifact resumption)
+            extra_cli_args: Additional CLI arguments to pass through
+        """
+        import os
+        import sys
+        import subprocess
+        import tempfile
+        import yaml
+        
+        logger.info(f"🔄 Preparing CLI resume from: {resume_source}")
+        
+        try:
+            # Use resume strategy to prepare checkpoint and config
+            strategy = self._select_resume_strategy(resume_source)
+            checkpoint_path, embedded_config_yaml = strategy.prepare_resume(
+                resume_source=resume_source,
+                use_wandb_config=use_wandb_config,
+                entity=entity,
+                project=project
+            )
+            
+            # Extract W&B run ID from checkpoint for proper resumption
+            wandb_run_id = self._extract_wandb_run_id_from_checkpoint(checkpoint_path)
+            
+            logger.info(f"🔄 Preparing subprocess resume command")
+            logger.info(f"   Checkpoint: {checkpoint_path}")
+            if wandb_run_id:
+                logger.info(f"   W&B Run ID: {wandb_run_id}")
+            else:
+                logger.info("   W&B Run ID: Not found in checkpoint")
+            
+            # Execute the subprocess
+            self._execute_fit_subprocess(
+                checkpoint_path=checkpoint_path,
+                embedded_config_yaml=embedded_config_yaml,
+                config_overrides=config_overrides,
+                wandb_run_id=wandb_run_id,
+                extra_cli_args=extra_cli_args
+            )
+            
+        except Exception as e:
+            import traceback
+            logger.error(f"❌ CLI resume failed: {e}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            raise
+    
+    def _extract_wandb_run_id_from_checkpoint(self, checkpoint_path: Union[str, Path]) -> Optional[str]:
+        """Extract W&B run ID from checkpoint file."""
+        try:
+            import torch
+            from ..utils.checkpoint.checkpoint_utils import extract_wandb_run_id
+            
+            checkpoint = torch.load(str(checkpoint_path), map_location='cpu', weights_only=False)
+            run_id = extract_wandb_run_id(checkpoint)
+            
+            if run_id:
+                logger.info(f"✅ Extracted W&B run ID from checkpoint: {run_id}")
+                return run_id
+            else:
+                logger.info("ℹ️ No W&B run ID found in checkpoint metadata")
+                return None
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to extract W&B run ID from checkpoint: {e}")
+            return None
+    
+    def _execute_fit_subprocess(
+        self,
+        checkpoint_path: Union[str, Path],
+        embedded_config_yaml: Optional[str],
+        config_overrides: Optional[List[Union[str, Path]]] = None,
+        wandb_run_id: Optional[str] = None,
+        extra_cli_args: Optional[List[str]] = None
+    ) -> None:
+        """Execute the fit command in a subprocess."""
+        import os
+        import sys
+        import subprocess
+        import tempfile
+        import yaml
+        
+        # Build command for subprocess
+        cmd = [sys.executable, '-m', 'lightning_reflow.cli', 'fit']
+        
+        # Handle embedded config from checkpoint FIRST (preserves --config --ckpt_path order)
+        temp_config_path = self._write_temp_config(embedded_config_yaml)
+        temp_wandb_config_path = None
+        
+        try:
+            # Add temp config as the BASE config file
+            if temp_config_path:
+                cmd.extend(['--config', temp_config_path])
+                logger.info(f"📄 Using Lightning's original merged config from checkpoint as base")
+            else:
+                logger.info("📄 No embedded config found in checkpoint, resuming without it.")
+            
+            # Add any user-provided override configs
+            if config_overrides:
+                for config_file in config_overrides:
+                    cmd.extend(['--config', str(config_file)])
+                logger.info(f"🔧 Applying override configs: {config_overrides}")
+            
+            # Add checkpoint path LAST so it overrides any ckpt_path in configs
+            cmd.extend(['--ckpt_path', str(checkpoint_path)])
+            
+            # Configure W&B logger for run resumption
+            if wandb_run_id:
+                temp_wandb_config_path = self._add_wandb_resume_config(cmd, wandb_run_id, embedded_config_yaml)
+            else:
+                logger.info("ℹ️ No W&B run ID found - will create new W&B run")
+            
+            # Pass through any additional Lightning CLI arguments
+            if extra_cli_args:
+                cmd.extend(extra_cli_args)
+                logger.info(f"🔧 Passing through additional arguments: {extra_cli_args}")
+            
+            logger.info(f"🚀 Executing: {' '.join(cmd)}")
+            
+            # Execute the fit command in subprocess
+            result = subprocess.run(cmd, check=True)
+            sys.exit(result.returncode)
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"❌ Subprocess failed with return code {e.returncode}")
+            sys.exit(e.returncode)
+        finally:
+            # Cleanup temp config files
+            self._cleanup_temp_config(temp_config_path)
+            if temp_wandb_config_path:
+                self._cleanup_temp_config(temp_wandb_config_path)
+    
+    def _write_temp_config(self, embedded_config_yaml: Optional[str]) -> Optional[str]:
+        """Write embedded config YAML to temporary file."""
+        if not embedded_config_yaml:
+            return None
+            
+        try:
+            import tempfile
+            import os
+            
+            temp_config_fd, temp_config_path = tempfile.mkstemp(
+                suffix='.yaml', 
+                prefix='resume_config_'
+            )
+            with os.fdopen(temp_config_fd, 'w') as f:
+                f.write(embedded_config_yaml)
+            return temp_config_path
+        except Exception as e:
+            logger.error(f"Failed to create temporary config file: {e}")
+            return None
+    
+    def _cleanup_temp_config(self, temp_config_path: Optional[str]) -> None:
+        """Clean up temporary config file."""
+        if temp_config_path and os.path.exists(temp_config_path):
+            try:
+                os.unlink(temp_config_path)
+                logger.info(f"🗑️ Cleaned up temporary config: {temp_config_path}")
+            except Exception:
+                pass
+    
+    def _add_wandb_resume_config(
+        self, 
+        cmd: List[str], 
+        wandb_run_id: str, 
+        embedded_config_yaml: Optional[str]
+    ) -> Optional[str]:
+        """Add W&B logger configuration for resuming a run."""
+        try:
+            import tempfile
+            import os
+            import yaml
+            
+            # Parse embedded config to check existing logger configuration
+            existing_config = {}
+            if embedded_config_yaml:
+                existing_config = yaml.safe_load(embedded_config_yaml) or {}
+            
+            # Check if there's already a logger configured
+            trainer_config = existing_config.get('trainer', {})
+            existing_logger = trainer_config.get('logger', None)
+            
+            # Prepare W&B logger config
+            if isinstance(existing_logger, dict) and existing_logger.get('class_path', '').endswith('WandbLogger'):
+                # Update existing W&B logger config
+                logger.info("📝 Updating existing W&B logger configuration for resume")
+                if 'init_args' not in existing_logger:
+                    existing_logger['init_args'] = {}
+                existing_logger['init_args']['id'] = wandb_run_id
+                existing_logger['init_args']['resume'] = 'allow'
+                wandb_config = {'trainer': {'logger': existing_logger}}
+            else:
+                # Create new W&B logger config
+                logger.info("📝 Creating new W&B logger configuration for resume")
+                wandb_logger_config = {
+                    'class_path': 'lightning.pytorch.loggers.WandbLogger',
+                    'init_args': {
+                        'id': wandb_run_id,
+                        'resume': 'allow',
+                        'log_model': False  # Don't log models by default during resume
+                    }
+                }
+                wandb_config = {'trainer': {'logger': wandb_logger_config}}
+            
+            # Write config to temporary file
+            wandb_config_yaml = yaml.dump(wandb_config)
+            temp_wandb_config_fd, temp_wandb_config_path = tempfile.mkstemp(
+                suffix='.yaml', 
+                prefix='wandb_logger_config_'
+            )
+            
+            with os.fdopen(temp_wandb_config_fd, 'w') as f:
+                f.write(wandb_config_yaml)
+            
+            # Add as config file (will be merged with others)
+            cmd.extend(['--config', temp_wandb_config_path])
+            logger.info(f"🔄 Configuring W&B logger to resume run: {wandb_run_id}")
+            
+            return temp_wandb_config_path
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to create W&B logger config: {e}")
+            if 'temp_wandb_config_path' in locals() and os.path.exists(temp_wandb_config_path):
+                try:
+                    os.unlink(temp_wandb_config_path)
+                except Exception:
+                    pass
+            return None
     
     def _create_model(self) -> pl.LightningModule:
         """Create model from configuration with enhanced resume support."""

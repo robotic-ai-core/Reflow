@@ -176,7 +176,7 @@ class TestWandbRunContinuity:
 
     def test_wandb_run_id_restoration_in_cli_resume(self, temp_dir, mock_checkpoint):
         """Test that CLI resume properly restores W&B run ID for continued logging."""
-        from lightning_reflow.cli.lightning_cli import LightningReflowCLI
+        from lightning_reflow.core import LightningReflow
         from unittest.mock import patch, MagicMock
         import torch
         
@@ -184,18 +184,16 @@ class TestWandbRunContinuity:
         checkpoint = torch.load(mock_checkpoint, weights_only=False)
         expected_run_id = checkpoint['wandb_run_id']
         
-        # Mock the CLI initialization to capture subprocess command
-        with patch('lightning_reflow.cli.lightning_cli.LightningReflowCLI.__init__', return_value=None):
-            cli = LightningReflowCLI.__new__(LightningReflowCLI)
-            
-            # Test the W&B run ID extraction method
-            extracted_run_id = cli._extract_wandb_run_id_from_checkpoint(mock_checkpoint)
-            assert extracted_run_id == expected_run_id, f"Expected {expected_run_id}, got {extracted_run_id}"
+        # Test the W&B run ID extraction method using LightningReflow
+        reflow = LightningReflow(auto_configure_logging=False)
+        extracted_run_id = reflow._extract_wandb_run_id_from_checkpoint(mock_checkpoint)
+        assert extracted_run_id == expected_run_id, f"Expected {expected_run_id}, got {extracted_run_id}"
             
         # Test that subprocess command includes proper Lightning CLI W&B arguments
-        with patch('lightning_reflow.cli.lightning_cli.subprocess.run') as mock_subprocess:
+        with patch('subprocess.run') as mock_subprocess:
             with patch('sys.argv', ['test', 'resume', '--checkpoint-path', str(mock_checkpoint)]):
                 try:
+                    from lightning_reflow.cli.lightning_cli import LightningReflowCLI
                     LightningReflowCLI()
                 except SystemExit:
                     pass  # Expected due to subprocess completion
