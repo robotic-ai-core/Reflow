@@ -74,6 +74,10 @@ class EnvironmentManagerState:
     def validate_state(self, state: Dict[str, Any]) -> bool:
         """Validate environment state."""
         return isinstance(state, dict) and 'env_vars' in state
+    
+    def get_captured_variables(self) -> Dict[str, str]:
+        """Get the environment variables that were captured and set."""
+        return self.env_vars.copy()
 
 
 class ManagerStateRegistry:
@@ -92,6 +96,10 @@ class ManagerStateRegistry:
         if manager_name in self.managers:
             del self.managers[manager_name]
             logger.debug(f"Unregistered manager: {manager_name}")
+    
+    def get_registered_managers(self) -> Dict[str, Any]:
+        """Get all registered managers."""
+        return self.managers.copy()
     
     def capture_all_states(self) -> Dict[str, Any]:
         """Capture all registered manager states."""

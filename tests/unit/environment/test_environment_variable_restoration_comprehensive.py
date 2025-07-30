@@ -329,7 +329,7 @@ class TestEnvironmentManagerStateIntegration:
             state = state_manager.capture_state()
             assert isinstance(state, dict)
             # Check that state contains expected fields - use actual field names
-            expected_fields = ['captured_env_vars', 'config_sources']
+            expected_fields = ['env_vars', 'config_sources']
             for field in expected_fields:
                 assert field in state
             

@@ -3,6 +3,13 @@ import logging
 from lightning.pytorch.utilities import rank_zero_only
 from lightning_reflow.utils.config import get_config_raw
 
+# Import process samplers for type checking
+try:
+    from modules.models.diffusion_process_samplers import DiffusionProcessSampler, BaseProcessSampler
+except ImportError:
+    DiffusionProcessSampler = None
+    BaseProcessSampler = None
+
 # No external dependencies on modules.* - reflow is self-contained
 
 class ConfigSummaryLogger(pl.Callback):

@@ -269,10 +269,6 @@ class FlowProgressBarCallback(LearningRateMonitor):
         """Hook called at the start of each training batch."""
         if not self.is_enabled: return
         
-        # Initialize progress bars on first batch
-        if not self._progress_bar_initialized:
-            self._initialize_progress_bars(trainer)
-        
         self._current_batch_idx = batch_idx
         self._update_metrics()
         self._populate_metrics_if_needed(force_refresh=False)
@@ -687,10 +683,10 @@ class FlowProgressBarCallback(LearningRateMonitor):
             # For step-based validation
             val_interval = trainer.val_check_interval
             if isinstance(val_interval, int):
-                steps_since_last_val = trainer.global_step - self._last_validation_step
+                steps_since_last_val = trainer.global_step - self._last_validation_batch
                 return val_interval - steps_since_last_val
             elif isinstance(val_interval, float) and val_interval > 1.0:
-                steps_since_last_val = trainer.global_step - self._last_validation_step
+                steps_since_last_val = trainer.global_step - self._last_validation_batch
                 return int(val_interval) - steps_since_last_val
         
         return None
@@ -793,11 +789,12 @@ class FlowProgressBarCallback(LearningRateMonitor):
         self._trainer = trainer
         self._prog_bar_metrics = {}
         
-        # Delay progress bar initialization to on_train_batch_start
-        # to ensure global_step is properly restored from checkpoint
-        self._progress_bar_initialized = False
+        if not self.is_enabled: 
+            return
             
-        if not self.is_enabled: return
+        # Initialize progress bars immediately in on_train_start
+        # Now that resume command issue is fixed, global_step should be correct
+        self._initialize_progress_bars(trainer)
 
     def _initialize_progress_bars(self, trainer: "pl.Trainer") -> None:
         """Initialize progress bars with trainer's current global_step."""

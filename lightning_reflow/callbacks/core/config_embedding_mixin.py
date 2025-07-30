@@ -89,6 +89,18 @@ class ConfigEmbeddingMixin:
         if not self._can_embed_config(trainer):
             logger.warning("Skipping config embedding due to invalid context.")
             return
+        
+        # CRITICAL: Embed Lightning's auto-generated config.yaml ONLY
+        # This is the COMPLETE merged configuration including trainer_defaults
+        lightning_config = self._capture_lightning_auto_config(trainer)
+        if not lightning_config:
+            error_msg = (
+                "Lightning config capture failed. Could not capture Lightning's auto-generated config.yaml. "
+                "Checkpoint will not be self-contained. This may cause issues during resume."
+            )
+            logger.error(error_msg)
+            # Don't add any metadata if config capture fails - tests expect empty checkpoint
+            return
             
         metadata = checkpoint.get(metadata_key, {})
         
@@ -106,16 +118,6 @@ class ConfigEmbeddingMixin:
         if wandb_run_id:
             metadata['wandb_run_id'] = wandb_run_id
             logger.info(f"📋 Storing W&B run ID in checkpoint: {wandb_run_id}")
-        
-        # CRITICAL: Embed Lightning's auto-generated config.yaml ONLY
-        # This is the COMPLETE merged configuration including trainer_defaults
-        lightning_config = self._capture_lightning_auto_config(trainer)
-        if not lightning_config:
-            logger.warning(
-                "Could not capture Lightning's auto-generated config.yaml. "
-                "Checkpoint will not be self-contained. This may cause issues during resume."
-            )
-            return
         
         metadata['embedded_config_content'] = lightning_config
         metadata['config_hash'] = self._calculate_config_hash(lightning_config)
@@ -145,6 +147,7 @@ class ConfigEmbeddingMixin:
         # Config metadata is automatically available in checkpoint
         # No specific restoration needed for config content
     
+
     def _capture_lightning_auto_config(self, trainer: Trainer) -> Optional[str]:
         """
         Capture Lightning's auto-generated config.yaml file ONLY.

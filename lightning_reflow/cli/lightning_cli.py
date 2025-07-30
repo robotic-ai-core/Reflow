@@ -10,6 +10,7 @@ import logging
 import sys
 from pathlib import Path
 from lightning.pytorch.cli import LightningCLI
+from typing import Optional
 
 from ..core import LightningReflow
 

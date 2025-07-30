@@ -8,7 +8,7 @@ from .monitoring.flow_progress_bar_callback import FlowProgressBarCallback
 
 __all__ = [
     "PauseCallback",
-    "WandbWatchCallback", 
+    "WandbWatchCallback",
     "ConfigSummaryLogger",
     "StepOutputLoggerCallback",
     "MemoryCleanupCallback",

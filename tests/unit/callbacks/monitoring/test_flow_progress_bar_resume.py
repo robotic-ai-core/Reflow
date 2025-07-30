@@ -17,8 +17,8 @@ from lightning_reflow.callbacks.monitoring import FlowProgressBarCallback
 class TestFlowProgressBarResume:
     """Test that FlowProgressBarCallback handles resume correctly."""
     
-    def test_progress_bar_delayed_initialization(self):
-        """Test that progress bar initialization is delayed until first batch."""
+    def test_progress_bar_immediate_initialization(self):
+        """Test that progress bar initialization happens immediately in on_train_start."""
         callback = FlowProgressBarCallback()
         
         # Mock trainer with global_step = 0 initially
@@ -26,20 +26,35 @@ class TestFlowProgressBarResume:
         trainer.global_step = 0
         trainer.logger = None
         trainer.current_epoch = 0
+        trainer.val_check_interval = None
+        trainer.check_val_every_n_epoch = None
+        trainer.max_steps = 1000
+        trainer.callback_metrics = {}
+        trainer.num_val_batches = None
+        trainer.num_training_batches = float('inf')
+        trainer.accumulate_grad_batches = 1
+        trainer.state = Mock()
+        trainer.state.stage = None
+        trainer.validating = False
         
-        # Call on_train_start - should not initialize progress bars
+        # Mock methods that will be called during initialization
+        callback._get_total_steps = Mock(return_value=1000)
+        callback._get_val_check_interval_steps = Mock(return_value=None)
+        callback._is_iterable_dataset = Mock(return_value=True)
+        
+        # Call on_train_start - should initialize progress bars immediately
         callback.on_train_start(trainer, Mock())
         
-        # Check that progress bars are not initialized yet
-        assert not hasattr(callback, '_progress_bar_initialized') or not callback._progress_bar_initialized
-        assert callback.total_steps_bar is None
-        assert callback.current_interval_bar is None
+        # Check that progress bars are initialized
+        assert hasattr(callback, '_progress_bar_initialized') and callback._progress_bar_initialized
+        assert callback.total_steps_bar is not None
+        assert callback.current_interval_bar is not None
     
-    def test_progress_bar_initialization_on_first_batch(self):
-        """Test that progress bars are initialized on first batch with correct global_step."""
+    def test_progress_bar_initialization_with_resumed_global_step(self):
+        """Test that progress bars are initialized with correct global_step when resuming."""
         callback = FlowProgressBarCallback()
         
-        # Mock trainer
+        # Mock trainer simulating resumed state
         trainer = Mock()
         trainer.global_step = 1234  # Simulating resumed state
         trainer.logger = None
@@ -50,30 +65,31 @@ class TestFlowProgressBarResume:
         trainer.callback_metrics = {}  # Mock empty metrics
         trainer.num_val_batches = None  # No validation batches
         trainer.num_training_batches = float('inf')  # Unknown number of batches
+        trainer.accumulate_grad_batches = 1
+        trainer.state = Mock()
+        trainer.state.stage = None
+        trainer.validating = False
         
         # Mock that we can get total steps
-        callback._trainer = trainer
         callback._get_total_steps = Mock(return_value=2000)
         callback._get_val_check_interval_steps = Mock(return_value=None)
         callback._is_iterable_dataset = Mock(return_value=True)
         
-        # Call on_train_start
+        # Call on_train_start - should initialize bars immediately
         callback.on_train_start(trainer, Mock())
         
-        # Verify bars not initialized
-        assert callback.total_steps_bar is None
-        
-        # Now call on_train_batch_start
-        callback.on_train_batch_start(trainer, Mock(), Mock(), 0)
-        
-        # Verify progress bars are initialized with correct global_step
+        # Verify bars are initialized with correct global_step
         assert callback.total_steps_bar is not None
         assert callback.total_steps_bar.n == 1234  # tqdm sets n to initial value
         assert callback.total_steps_bar.initial == 1234  # Initial should be set to global_step
         assert callback._progress_bar_initialized is True
         
-        # Verify that the first update was skipped to preserve initial value
-        # The bar.n should still be 1234, not overwritten by an update
+        # Now call on_train_batch_start - bars should already be initialized
+        callback.on_train_batch_start(trainer, Mock(), Mock(), 0)
+        
+        # Verify progress bars remain initialized with same values
+        assert callback.total_steps_bar is not None
+        assert callback.total_steps_bar.initial == 1234  # Initial value preserved
     
     def test_progress_bar_not_reinitialized_on_subsequent_batches(self):
         """Test that progress bars are not re-initialized on subsequent batches."""

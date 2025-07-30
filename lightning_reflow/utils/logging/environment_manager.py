@@ -32,6 +32,7 @@ class EnvironmentManager:
     def get_state_manager(cls) -> 'EnvironmentManagerState':
         """Get or create the global state manager instance."""
         if cls._state_manager is None:
+            # Use LightningReflow's own manager state system (preferred for portability)
             from ..checkpoint.manager_state import EnvironmentManagerState
             cls._state_manager = EnvironmentManagerState()
         return cls._state_manager
@@ -39,10 +40,11 @@ class EnvironmentManager:
     @classmethod
     def register_for_checkpoint_persistence(cls) -> None:
         """Register this manager for checkpoint state persistence."""
+        # Use LightningReflow's own manager state system (preferred for portability)
         from ..checkpoint.manager_state import register_manager
         state_manager = cls.get_state_manager()
         register_manager(state_manager)
-        logger.info("🔗 EnvironmentManager registered for checkpoint persistence")
+        logger.info("🔗 EnvironmentManager registered with LightningReflow manager state system")
     
     @staticmethod
     def extract_environment_from_configs(config_paths: List[Path]) -> Tuple[Dict[str, str], List[Tuple[Path, Path]]]:

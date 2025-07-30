@@ -33,34 +33,35 @@ class TestProgressBarManagement:
             "conflicts with FlowProgressBarCallback"
         )
     
-    def test_user_can_override_progress_bar_setting(self):
+    def test_progress_bar_override_is_prevented(self):
         """
-        Test that users can still override the progress bar setting if desired.
+        Test that LightningReflow prevents users from enabling Lightning's default progress bar.
         
-        Some users might want to use Lightning's default progress bar instead
-        of the custom FlowProgressBarCallback.
+        This is to prevent conflicts between Lightning's default progress bar and
+        LightningReflow's custom FlowProgressBarCallback system.
         """
-        # User explicitly enables Lightning's progress bar
+        # User tries to explicitly enable Lightning's progress bar
         reflow = LightningReflow(
             trainer_defaults={"enable_progress_bar": True}
         )
         
         trainer = reflow._create_trainer()
         
-        # Verify user's setting is respected
-        assert trainer.progress_bar_callback is not None, (
-            "User's explicit enable_progress_bar=True should be respected"
+        # Verify that the override is prevented to avoid conflicts
+        assert trainer.progress_bar_callback is None, (
+            "Lightning's default progress bar should remain disabled even when "
+            "user sets enable_progress_bar=True to prevent conflicts"
         )
     
-    def test_config_file_can_override_progress_bar_setting(self):
+    def test_config_file_progress_bar_override_also_prevented(self):
         """
-        Test that config files can override the default progress bar setting.
+        Test that config files also cannot override the progress bar setting.
         """
         import tempfile
         import yaml
         from pathlib import Path
         
-        # Create a temporary config file that enables progress bar
+        # Create a temporary config file that tries to enable progress bar
         config_content = {
             'trainer': {
                 'enable_progress_bar': True,
@@ -77,9 +78,10 @@ class TestProgressBarManagement:
             reflow = LightningReflow(config_files=config_path)
             trainer = reflow._create_trainer()
             
-            # Verify config file setting is respected
-            assert trainer.progress_bar_callback is not None, (
-                "Config file enable_progress_bar=true should override default"
+            # Verify config file setting is also prevented to avoid conflicts
+            assert trainer.progress_bar_callback is None, (
+                "Config file enable_progress_bar=true should also be prevented "
+                "to maintain consistency and avoid conflicts"
             )
             
         finally:
