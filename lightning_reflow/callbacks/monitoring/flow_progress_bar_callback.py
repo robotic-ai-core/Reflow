@@ -445,9 +445,6 @@ class FlowProgressBarCallback(LearningRateMonitor):
         if not self.is_enabled: 
             return
         
-        # Increment validation counter when validation completes
-        self._validation_count += 1
-        
         self._update_total_steps_bar(trainer)
         
         # Reset the interval bar for the next training interval
@@ -465,11 +462,13 @@ class FlowProgressBarCallback(LearningRateMonitor):
             
             if val_interval_steps:
                 interval_total = val_interval_steps
-                current_interval = self._get_current_interval(trainer, val_interval_steps)
+                # Calculate interval BEFORE incrementing validation count
+                # After completing validation N, we're starting interval N+1
+                next_interval = self._validation_count + 1
                 if trainer.val_check_interval:
-                    interval_desc = f"Interval {current_interval} (Steps to Val)"
+                    interval_desc = f"Interval {next_interval} (Steps to Val)"
                 else:
-                    interval_desc = f"Interval {current_interval} (Steps to Sample)"
+                    interval_desc = f"Interval {next_interval} (Steps to Sample)"
             else:
                 interval_total = None
                 if hasattr(trainer, 'num_training_batches') and trainer.num_training_batches != float('inf'):
@@ -507,6 +506,10 @@ class FlowProgressBarCallback(LearningRateMonitor):
             
             # Force a refresh to ensure the bar is displayed
             self.current_interval_bar.refresh()
+            
+            # Now increment validation count after creating the bar
+            # This ensures the next call to _get_current_interval returns the correct value
+            self._validation_count += 1
 
         self._update_metrics()
         self._populate_metrics_if_needed(force_refresh=True)
@@ -731,8 +734,8 @@ class FlowProgressBarCallback(LearningRateMonitor):
         """Calculate current interval number based on forward passes."""
         if not trainer or trainer.global_step == 0:
             return 1
-        # The current interval is always validation_count + 1
-        # This represents which interval we're currently in (or just finished)
+        # The current interval is validation_count + 1
+        # This represents which interval we're currently training in
         return self._validation_count + 1
 
     def _update_interval_bar(self, trainer: "pl.Trainer") -> None:
