@@ -216,6 +216,10 @@ class LightningReflow:
             # Merge additional config if available
             if additional_config:
                 logger.info("Applying additional configuration from checkpoint source")
+                # Parse YAML string if needed
+                if isinstance(additional_config, str):
+                    import yaml
+                    additional_config = yaml.safe_load(additional_config)
                 merged_config = self.config_loader._apply_overrides(self.config, additional_config)
                 self.config_loader.config = merged_config
                 self.config = merged_config

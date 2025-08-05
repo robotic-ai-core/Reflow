@@ -2,7 +2,7 @@ import lightning.pytorch as pl
 import warnings
 from lightning.pytorch.utilities import rank_zero_only
 from typing import Union, List
-from lightning_reflow.utils.logging.logging_config import get_logger
+from ...utils.logging.logging_config import get_logger
 
 class WandbWatchCallback(pl.Callback):
     """

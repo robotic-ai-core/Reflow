@@ -11,13 +11,13 @@ __email__ = ""
 __license__ = "MIT"
 
 # Core imports - expose main components
-from lightning_reflow.core import LightningReflow
-from lightning_reflow.cli import LightningReflowCLI
-from lightning_reflow.models import SimpleReflowModel
-from lightning_reflow.data import SimpleDataModule
+from .core import LightningReflow
+from .cli import LightningReflowCLI
+from .models import SimpleReflowModel
+from .data import SimpleDataModule
 
 # Callback imports
-from lightning_reflow.callbacks import (
+from .callbacks import (
     PauseCallback,
     WandbWatchCallback,
     ConfigSummaryLogger,
@@ -28,8 +28,8 @@ from lightning_reflow.callbacks import (
 )
 
 # Utility imports
-from lightning_reflow.utils import get_torch_generator_from_seed
-from lightning_reflow.utils.logging import EnvironmentManager
+from .utils import get_torch_generator_from_seed
+from .utils.logging import EnvironmentManager
 
 __all__ = [
     # Core components
