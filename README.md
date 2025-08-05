@@ -1,81 +1,134 @@
-# Lightning Reflow
+# LightningReflow
 
-A self-contained Lightning PyTorch framework extension with advanced pause/resume, W&B integration, and CLI capabilities.
+A PyTorch Lightning extension framework providing advanced training capabilities including pause/resume functionality, W&B integration, and an enhanced CLI.
 
 ## Overview
 
-Lightning Reflow provides a comprehensive training framework built on PyTorch Lightning with the following key features:
+LightningReflow extends PyTorch Lightning with production-ready features for ML training workflows:
 
-- **Advanced Pause/Resume**: Sophisticated pause/resume functionality with checkpoint management
-- **W&B Integration**: Deep Weights & Biases integration with artifact management 
-- **Extended CLI**: Enhanced Lightning CLI with resume subcommands and config management
-- **Callback System**: Rich callback ecosystem for monitoring, logging, and training control
-- **Config Management**: Advanced configuration synthesis and override capabilities
+- **Advanced Pause/Resume**: Interrupt and resume training with complete state preservation
+- **W&B Integration**: Deep Weights & Biases integration with artifact management and run continuity
+- **Enhanced CLI**: Extended Lightning CLI with resume commands and config management
+- **Rich Callbacks**: Comprehensive callback system for monitoring, environment management, and training control
+- **Config Embedding**: Checkpoint-embedded configurations for reproducible training
 
-## Directory Structure
+## Installation
+
+### As a Git Submodule
+
+```bash
+# Add as submodule
+git submodule add https://github.com/neil-tan/LightningReflow.git lib/lightning_reflow
+
+# Install in editable mode
+pip install -e lib/lightning_reflow/
+```
+
+### Direct Installation
+
+```bash
+# Clone and install
+git clone https://github.com/neil-tan/LightningReflow.git
+cd LightningReflow
+pip install -e .
+```
+
+## Project Structure
 
 ```
 lightning_reflow/
 ├── callbacks/          # Training callbacks
 │   ├── core/          # Core callbacks (config embedding, memory cleanup)
-│   ├── logging/       # Logging callbacks
-│   ├── monitoring/    # Training monitoring callbacks
+│   ├── environment/   # Environment variable management
+│   ├── monitoring/    # Training monitoring (progress bars, metrics)
 │   ├── pause/         # Pause/resume functionality
-│   └── wandb/         # W&B integration callbacks
+│   └── __init__.py    # Callback exports
 ├── cli/               # Enhanced Lightning CLI
+│   ├── __init__.py
+│   ├── __main__.py    # CLI entry point
 │   └── lightning_cli.py
-├── data/              # Data modules (minimal for testing)
-│   └── simple_data.py
-├── models/            # Model implementations (minimal for testing)  
-│   └── simple_model.py
+├── core/              # Core framework components
+│   └── lightning_reflow.py
+├── strategies/        # Resume strategies
+│   └── wandb_artifact_resume_strategy.py
 ├── utils/             # Utilities
 │   ├── checkpoint/    # Checkpoint management
 │   ├── config/        # Configuration utilities
-│   ├── logging/       # Logging utilities
 │   └── wandb/         # W&B utilities
-└── tests/             # Comprehensive test suite
-    ├── integration/   # Integration tests
-    ├── unit/          # Unit tests
-    └── fixtures/      # Test fixtures
+└── __init__.py        # Package exports
 ```
 
 ## Quick Start
 
-### Basic Training
+### Basic Usage in Your Project
 
 ```python
-from lightning_reflow.models import SimpleReflowModel
-from lightning_reflow.data import SimpleDataModule
 import lightning.pytorch as pl
+from lightning_reflow import LightningReflow
+from lightning_reflow.callbacks import (
+    PauseCallback,
+    FlowProgressBarCallback,
+    EnvironmentCallback
+)
 
-# Create model and data
-model = SimpleReflowModel(input_dim=784, hidden_dim=128, output_dim=10)
-data = SimpleDataModule(batch_size=32, train_samples=1000)
+# Using with your own model and data
+model = YourLightningModule()
+data = YourDataModule()
 
-# Train
-trainer = pl.Trainer(max_epochs=10)
+# Option 1: Use callbacks directly with PyTorch Lightning
+trainer = pl.Trainer(
+    max_epochs=100,
+    callbacks=[
+        PauseCallback(
+            checkpoint_dir="pause_checkpoints",
+            enable_pause=True,
+            pause_key='p'
+        ),
+        FlowProgressBarCallback(
+            refresh_rate=1,
+            global_bar_metrics=['loss', 'val_loss'],
+            interval_bar_metrics=['lr-*']
+        ),
+        EnvironmentCallback(
+            env_vars={
+                'PYTORCH_CUDA_ALLOC_CONF': 'max_split_size_mb:128',
+                'CUDA_VISIBLE_DEVICES': '0,1'
+            }
+        )
+    ]
+)
 trainer.fit(model, data)
+
+# Option 2: Use LightningReflow for enhanced functionality
+reflow = LightningReflow()
+reflow.fit(config="path/to/config.yaml")
 ```
 
 ### CLI Usage
 
 ```bash
-# Basic training
-python -m lightning_reflow.cli fit --model.learning_rate=0.01 --trainer.max_epochs=10
+# Training with config file
+python -m lightning_reflow.cli fit --config config.yaml
 
-# Resume from checkpoint
+# Training with CLI overrides
+python -m lightning_reflow.cli fit --config config.yaml --trainer.max_epochs=100 --model.learning_rate=0.001
+
+# Resume from local checkpoint
 python -m lightning_reflow.cli resume --checkpoint-path /path/to/checkpoint.ckpt
 
 # Resume from W&B artifact
 python -m lightning_reflow.cli resume --checkpoint-artifact entity/project/run-id:latest
+
+# Resume with config overrides
+python -m lightning_reflow.cli resume --checkpoint-path checkpoint.ckpt --trainer.max_epochs=200
 ```
 
-### With Configuration Files
+### Configuration Files
 
 ```yaml
 # config.yaml
 model:
-  class_path: lightning_reflow.models.SimpleReflowModel
+  class_path: your_project.models.YourModel
   init_args:
     input_dim: 784
     hidden_dim: 256
@@ -83,123 +136,314 @@ model:
     learning_rate: 0.001
 
 data:
-  class_path: lightning_reflow.data.SimpleDataModule
+  class_path: your_project.data.YourDataModule
   init_args:
     batch_size: 64
-    train_samples: 5000
+    num_workers: 4
 
 trainer:
-  max_epochs: 50
+  max_epochs: 100
+  accelerator: gpu
+  devices: 2
+  callbacks:
+    - class_path: lightning_reflow.callbacks.PauseCallback
+      init_args:
+        checkpoint_dir: pause_checkpoints
+        enable_pause: true
+        pause_key: p
+        upload_key: w
+    - class_path: lightning_reflow.callbacks.FlowProgressBarCallback
+      init_args:
+        refresh_rate: 1
+        global_bar_metrics: ['loss', 'val_loss']
+    - class_path: lightning_reflow.callbacks.EnvironmentCallback
+      init_args:
+        env_vars:
+          PYTORCH_CUDA_ALLOC_CONF: "max_split_size_mb:128"
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: my-project
+      save_dir: wandb_logs
 ```
 
-```bash
-python -m lightning_reflow.cli fit --config config.yaml
+## Key Components
+
+### 1. PauseCallback
+
+Interactive pause/resume during training:
+
+```python
+from lightning_reflow.callbacks import PauseCallback
+
+callback = PauseCallback(
+    checkpoint_dir="pause_checkpoints",
+    enable_pause=True,
+    pause_key='p',           # Press 'p' to pause
+    upload_key='w',          # Press 'w' to upload to W&B
+    refresh_rate=1,          # Update frequency in seconds
+    bar_colour='#fcac17'     # Custom progress bar color
+)
 ```
 
-## Key Features
+**Features:**
+- Real-time keyboard control during training
+- Checkpoint saving with embedded configuration
+- W&B artifact upload with resume commands
+- Complete state preservation (RNG, optimizer, etc.)
 
-### Pause/Resume System
+### 2. FlowProgressBarCallback
 
-The pause/resume system allows interrupting training gracefully and resuming from the exact same state:
+Enhanced progress bars with metric tracking:
 
-- **Keyboard Interrupt Handling**: Press 'p' to pause, 'w' to upload checkpoint
-- **State Preservation**: Complete training state including RNG states
-- **W&B Integration**: Automatic artifact upload and resume command generation
-- **Config Embedding**: Training configuration embedded in checkpoints
+```python
+from lightning_reflow.callbacks import FlowProgressBarCallback
 
-### W&B Integration
-
-Deep integration with Weights & Biases:
-
-- **Artifact Management**: Automatic checkpoint upload as versioned artifacts
-- **Run Continuity**: Resume training with the same W&B run ID
-- **Config Syncing**: Configuration synchronization between local and W&B
-- **Resume Commands**: Auto-generated resume commands in W&B interface
-
-### Extended CLI
-
-Enhanced Lightning CLI with additional functionality:
-
-- **Resume Subcommand**: Dedicated resume subcommand with artifact support
-- **Config Merging**: Sophisticated configuration override and merging
-- **Argument Linking**: Advanced CLI argument to config parameter linking
-- **Dry Run Mode**: Preview commands before execution
-
-## Testing
-
-Comprehensive test suite with both unit and integration tests:
-
-```bash
-# Run all tests
-python tests/test_runner.py --type all
-
-# Run specific test categories
-python tests/test_runner.py --type unit
-python tests/test_runner.py --type integration
-python tests/test_runner.py --type cli
-
-# Run with coverage
-python tests/test_runner.py --type coverage
+callback = FlowProgressBarCallback(
+    refresh_rate=1,
+    global_bar_metrics=['loss', 'val_loss', 'epoch'],
+    interval_bar_metrics=['lr-*', '*/loss'],  # Glob patterns supported
+    leave=True
+)
 ```
 
-### Test Categories
+**Features:**
+- Dual progress bars (global/interval)
+- Pattern matching for metrics
+- Efficient caching for performance
+- Correct interval calculation for validation
 
-- **Unit Tests**: Individual component testing
-- **Integration Tests**: Cross-component integration testing
-- **CLI Tests**: Command-line interface testing
-- **End-to-End Tests**: Complete pipeline testing
+### 3. EnvironmentCallback
 
-## Development
+Environment variable management:
 
-### Adding New Components
+```python
+from lightning_reflow.callbacks import EnvironmentCallback
 
-1. Implement the component in the appropriate directory
-2. Add comprehensive unit tests in `tests/unit/`
-3. Add integration tests if the component interacts with others
-4. Update documentation and examples
-
-### Running Tests
-
-The test suite is designed to be self-contained with mocked external dependencies:
-
-```bash
-# Quick test of core functionality
-pytest tests/unit/test_simple_model.py -v
-
-# Full integration test suite
-pytest tests/integration/ -v
-
-# Specific functionality tests
-pytest tests/unit/callbacks/ -v
+callback = EnvironmentCallback(
+    env_vars={
+        'PYTORCH_CUDA_ALLOC_CONF': 'max_split_size_mb:128,expandable_segments:True',
+        'CUDA_VISIBLE_DEVICES': '0,1',
+        'TOKENIZERS_PARALLELISM': 'false'
+    },
+    merge_strategy='override'  # or 'merge'
+)
 ```
 
-## Architecture
+**Features:**
+- Environment setup before training
+- State preservation in checkpoints
+- Config precedence handling (config > checkpoint > system)
+- Validation and conflict resolution
 
-Lightning Reflow is built with a modular architecture:
+### 4. Enhanced CLI
 
-- **Models**: Minimal test models for pipeline validation
-- **Data**: Simple data modules for testing and examples
-- **Callbacks**: Extensive callback system for training control
-- **CLI**: Extended Lightning CLI with advanced features
-- **Utils**: Supporting utilities for various functionality
+Extended Lightning CLI with resume capabilities:
 
-The framework is designed to be:
-- **Self-contained**: Minimal external dependencies for core functionality
-- **Testable**: Comprehensive test coverage with mocked dependencies
-- **Extensible**: Easy to add new components and functionality
-- **Compatible**: Works with standard PyTorch Lightning workflows
+```python
+from lightning_reflow.cli import LightningReflowCLI
 
-## Integration with Yggdrasil
+# Direct usage
+cli = LightningReflowCLI(
+    model_class=YourModel,
+    datamodule_class=YourDataModule,
+    save_config_callback=None  # Auto-handled
+)
+```
 
-While Lightning Reflow is self-contained, it integrates seamlessly with the larger Yggdrasil project:
+**Features:**
+- `resume` subcommand for checkpoint/artifact resumption
+- Config embedding and extraction
+- Advanced override merging
+- W&B artifact download and management
 
-- Shared callback implementations
-- Compatible checkpoint formats
-- Common utility functions
-- Consistent CLI interface
+## API Usage Examples
 
-This allows for easy testing of Lightning Reflow components in isolation while maintaining compatibility with the full Yggdrasil training pipeline.
+### Using Callbacks in Your Training Script
+
+```python
+import lightning.pytorch as pl
+from lightning_reflow.callbacks import PauseCallback, FlowProgressBarCallback
+
+class YourModel(pl.LightningModule):
+    def __init__(self):
+        super().__init__()
+        # Your model definition
+    
+    def training_step(self, batch, batch_idx):
+        # Your training logic
+        loss = self.compute_loss(batch)
+        self.log('loss', loss)
+        return loss
+
+# Create trainer with LightningReflow callbacks
+trainer = pl.Trainer(
+    max_epochs=100,
+    callbacks=[
+        PauseCallback(
+            checkpoint_dir="checkpoints/pause",
+            enable_pause=True
+        ),
+        FlowProgressBarCallback(
+            global_bar_metrics=['loss', 'val_loss']
+        )
+    ]
+)
+
+# Train - press 'p' to pause anytime
+trainer.fit(model, dataloader)
+```
+
+### Programmatic Resume
+
+```python
+from lightning_reflow.core import LightningReflow
+from lightning_reflow.utils.checkpoint import extract_embedded_config
+
+# Resume from checkpoint with embedded config
+reflow = LightningReflow()
+result = reflow.resume(
+    resume_source="path/to/checkpoint.ckpt",
+    additional_config={"trainer": {"max_epochs": 200}}
+)
+
+# Or extract config for inspection
+checkpoint = torch.load("checkpoint.ckpt")
+embedded_config = extract_embedded_config(checkpoint)
+print(embedded_config)  # View the training configuration
+```
+
+### Custom Callback Integration
+
+```python
+from lightning_reflow.callbacks.core import CallbackConfigMixin
+
+class YourCustomCallback(pl.Callback, CallbackConfigMixin):
+    def __init__(self, param1: str, param2: int = 10):
+        super().__init__()
+        self.param1 = param1
+        self.param2 = param2
+    
+    def on_train_start(self, trainer, pl_module):
+        # Your callback logic
+        pass
+    
+    def state_dict(self):
+        # Will be saved in checkpoint
+        return {"param1": self.param1, "param2": self.param2}
+    
+    def load_state_dict(self, state_dict):
+        # Will be restored on resume
+        self.param1 = state_dict.get("param1", self.param1)
+        self.param2 = state_dict.get("param2", self.param2)
+```
+
+## Common Use Cases
+
+### 1. Long-Running Training with Interruption Support
+
+```yaml
+# long_training_config.yaml
+trainer:
+  max_epochs: 1000
+  callbacks:
+    - class_path: lightning_reflow.callbacks.PauseCallback
+      init_args:
+        checkpoint_dir: pause_checkpoints
+        enable_pause: true
+        pause_on_batch_end: true  # Can pause mid-epoch
+```
+
+### 2. Multi-GPU Training with Environment Setup
+
+```python
+from lightning_reflow.callbacks import EnvironmentCallback
+
+callback = EnvironmentCallback(
+    env_vars={
+        'CUDA_VISIBLE_DEVICES': '0,1,2,3',
+        'NCCL_DEBUG': 'INFO',
+        'PYTORCH_CUDA_ALLOC_CONF': 'max_split_size_mb:512'
+    }
+)
+```
+
+### 3. W&B Integration with Artifact Tracking
+
+```python
+trainer = pl.Trainer(
+    logger=pl.loggers.WandbLogger(
+        project="my-project",
+        save_dir="logs"
+    ),
+    callbacks=[
+        PauseCallback(
+            checkpoint_dir="checkpoints",
+            enable_pause=True,
+            upload_to_wandb=True  # Auto-upload on pause
+        )
+    ]
+)
+```
+
+## Architecture & Design
+
+### Design Principles
+
+1. **Modular**: Each component can be used independently
+2. **Non-invasive**: Works with existing PyTorch Lightning code
+3. **State-preserving**: Full training state recovery on resume
+4. **Config-driven**: YAML-based configuration with CLI overrides
+
+### Integration Points
+
+- **PyTorch Lightning**: Extends pl.Callback, pl.Trainer, LightningCLI
+- **Weights & Biases**: Optional deep integration for experiment tracking
+- **Checkpoint Format**: Compatible with standard Lightning checkpoints
+- **CLI Interface**: Drop-in replacement for LightningCLI
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Import Errors**
+   ```bash
+   # Ensure package is installed
+   pip install -e /path/to/lightning_reflow
+   ```
+
+2. **Pause Not Working**
+   - Ensure terminal supports keyboard input
+   - Check `enable_pause=True` in PauseCallback
+   - Verify callback is in trainer.callbacks list
+
+3. **W&B Resume Issues**
+   - Ensure W&B is logged in: `wandb login`
+   - Check artifact permissions
+   - Verify run ID extraction from checkpoint
+
+4. **Environment Variables Not Set**
+   - Check EnvironmentCallback is early in callback list
+   - Verify no conflicting environment settings
+   - Check config precedence (config > checkpoint > system)
+
+## Dependencies
+
+- PyTorch Lightning >= 2.0
+- PyTorch >= 2.0
+- wandb (optional, for W&B integration)
+- pyyaml
+- tqdm
+- jsonargparse
+
+## License
+
+See LICENSE file in the repository root.
+
+## Contributing
+
+Contributions welcome! Please ensure:
+- Code follows existing patterns
+- Tests are added for new features
+- Documentation is updated
+- All tests pass before submitting PR
