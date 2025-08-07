@@ -261,6 +261,7 @@ class LightningReflow:
         use_wandb_config: bool = False,
         entity: Optional[str] = None,
         project: Optional[str] = None,
+        wandb_run_id: Optional[str] = None,
         extra_cli_args: Optional[List[str]] = None
     ) -> None:
         """
@@ -276,6 +277,7 @@ class LightningReflow:
             use_wandb_config: Whether to use config from W&B run (for W&B artifacts)
             entity: W&B entity (for artifact resumption)
             project: W&B project (for artifact resumption)
+            wandb_run_id: Explicit W&B run ID to resume (overrides checkpoint's run ID)
             extra_cli_args: Additional CLI arguments to pass through
         """
         import os
@@ -296,15 +298,20 @@ class LightningReflow:
                 project=project
             )
             
-            # Extract W&B run ID from checkpoint for proper resumption
-            wandb_run_id = self._extract_wandb_run_id_from_checkpoint(checkpoint_path)
+            # Use explicit wandb_run_id if provided, otherwise extract from checkpoint
+            if wandb_run_id:
+                logger.info(f"📌 Using explicit W&B run ID: {wandb_run_id}")
+            else:
+                wandb_run_id = self._extract_wandb_run_id_from_checkpoint(checkpoint_path)
+                if wandb_run_id:
+                    logger.info(f"✅ Extracted W&B run ID from checkpoint: {wandb_run_id}")
             
             logger.info(f"🔄 Preparing subprocess resume command")
             logger.info(f"   Checkpoint: {checkpoint_path}")
             if wandb_run_id:
                 logger.info(f"   W&B Run ID: {wandb_run_id}")
             else:
-                logger.info("   W&B Run ID: Not found in checkpoint")
+                logger.info("   W&B Run ID: Not found (will create new run)")
             
             # Execute the subprocess
             self._execute_fit_subprocess(
@@ -380,11 +387,12 @@ class LightningReflow:
             # Add checkpoint path LAST so it overrides any ckpt_path in configs
             cmd.extend(['--ckpt_path', str(checkpoint_path)])
             
-            # Configure W&B logger for run resumption
+            # Configure W&B logger for run resumption if we have a run ID
             if wandb_run_id:
                 temp_wandb_config_path = self._add_wandb_resume_config(cmd, wandb_run_id, embedded_config_yaml)
             else:
-                logger.info("ℹ️ No W&B run ID found - will create new W&B run")
+                logger.info("ℹ️ No W&B run ID specified - will create new W&B run if logger is configured")
+                temp_wandb_config_path = None
             
             # Pass through any additional Lightning CLI arguments
             if extra_cli_args:

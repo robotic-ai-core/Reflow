@@ -227,6 +227,7 @@ class LightningReflowCLI(LightningCLI):
                 use_wandb_config=args.use_wandb_config,
                 entity=args.entity,
                 project=args.project,
+                wandb_run_id=args.wandb_run_id if hasattr(args, 'wandb_run_id') else None,
                 extra_cli_args=unknown_args
             )
             
@@ -276,6 +277,12 @@ class LightningReflowCLI(LightningCLI):
             "--project", 
             type=str,
             help="W&B project (for artifact resumption)"
+        )
+        
+        parser.add_argument(
+            "--wandb-run-id",
+            type=str,
+            help="W&B run ID to resume (overrides checkpoint's run ID). Allows resuming to a different or new run."
         )
         
         return parser
