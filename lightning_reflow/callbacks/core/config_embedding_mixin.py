@@ -169,16 +169,9 @@ class ConfigEmbeddingMixin:
             
             # Step 2: Read Lightning's auto-generated config.yaml as raw string
             config_path = lightning_log_dir / "config.yaml"
-            
-            # Fallback: For non-CLI usage (tests, programmatic), check current directory
             if not config_path.exists():
-                fallback_config_path = Path("config.yaml")
-                if fallback_config_path.exists():
-                    logger.info(f"ConfigEmbeddingMixin: Using config.yaml from current directory (non-CLI mode)")
-                    config_path = fallback_config_path
-                else:
-                    logger.warning(f"ConfigEmbeddingMixin: Lightning config not found at {config_path}")
-                    return None
+                logger.warning(f"ConfigEmbeddingMixin: Lightning config not found at {config_path}")
+                return None
             
             with open(config_path, 'r') as f:
                 lightning_config_string = f.read().strip()
