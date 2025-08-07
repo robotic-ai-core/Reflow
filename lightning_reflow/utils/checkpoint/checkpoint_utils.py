@@ -161,6 +161,12 @@ def extract_wandb_run_id(checkpoint: Dict[str, Any]) -> Optional[str]:
     Returns:
         W&B run ID if found, None otherwise
     """
+    # Check root level first (simplest format, used in some tests)
+    if 'wandb_run_id' in checkpoint:
+        run_id = checkpoint['wandb_run_id']
+        if isinstance(run_id, str) and run_id.strip():
+            return run_id.strip()
+    
     # Check self_contained_metadata (modern format)
     if 'self_contained_metadata' in checkpoint:
         metadata = checkpoint['self_contained_metadata']
@@ -260,6 +266,7 @@ def extract_embedded_config(checkpoint_path: str) -> Optional[str]:
     """
     try:
         checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        print(f"[DEBUG] Checkpoint keys: {list(checkpoint.keys())[:10]}")  # Show first 10 keys
         
         # Check all known metadata locations
         metadata_locations = [
@@ -283,6 +290,13 @@ def extract_embedded_config(checkpoint_path: str) -> Optional[str]:
         if 'embedded_config_content' in checkpoint:
             print("[INFO] Found embedded config at top level (legacy format)")
             return checkpoint['embedded_config_content']
+        
+        # Check for clean checkpoint format (lightning_config)
+        if 'lightning_config' in checkpoint:
+            print("[INFO] Found lightning_config (clean checkpoint format)")
+            import yaml
+            # Convert the config dict to YAML string for consistency
+            return yaml.dump(checkpoint['lightning_config'])
         
         return None
         

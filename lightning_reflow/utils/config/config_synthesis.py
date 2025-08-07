@@ -92,14 +92,32 @@ def convert_config_dict_to_dataclasses(config_dict: Dict[str, Any]) -> Dict[str,
     import logging
     logger = logging.getLogger(__name__)
     
-    # Reflow package is independent - no external modules.* dependencies allowed
-    # Advanced config synthesis requires the full Yggdrasil environment
-    if any(key in config_dict for key in ['backbone', 'condition_encoder', 'optimizer', 'logging']):
-        raise ImportError(
-            "Advanced config synthesis (backbone, condition_encoder, optimizer, logging) requires "
-            "running within the full Yggdrasil environment with modules.* available. "
-            "For external usage, use simpler config dictionaries or disable config synthesis."
+    # Try to import from modules.* if available
+    try:
+        import sys
+        from pathlib import Path
+        # Add parent directory to path to allow importing modules.*
+        project_root = Path(__file__).parent.parent.parent.parent.parent
+        if str(project_root) not in sys.path:
+            sys.path.insert(0, str(project_root))
+        
+        from modules.utils.config.config import (
+            GenerativeBackboneConfig, UNetConfig, OptimizerConfig,
+            LoggingConfig, FlowMatchingProcessSamplerConfig, 
+            DiffusionProcessSamplerConfig, ODESolverConfig,
+            MultiModalEncoderConfig, ModalityEncoderConfig,
+            EmbeddingAdaptorConfig
         )
+        configs_available = True
+    except ImportError as e:
+        logger.warning(f"Could not import config classes from modules.*: {e}")
+        configs_available = False
+        
+    if not configs_available:
+        # If we can't import the config classes, return the dict as-is
+        # The model will need to handle dict inputs
+        logger.warning("Config synthesis not available - returning dict configs as-is")
+        return config_dict
     
     converted_config = config_dict.copy()
     
@@ -109,9 +127,15 @@ def convert_config_dict_to_dataclasses(config_dict: Dict[str, Any]) -> Dict[str,
         backbone_type = backbone_dict.get('type', 'unet')
         init_args = backbone_dict.get('init_args', {})
         
+        # Debug logging
+        logger.info(f"Converting backbone config: type={backbone_type}, init_args keys={list(init_args.keys()) if isinstance(init_args, dict) else 'not a dict'}")
+        if isinstance(init_args, dict) and 'input_size' in init_args:
+            logger.info(f"  input_size value: {init_args['input_size']}")
+        
         # Convert init_args to proper config type
         if backbone_type == 'unet' and isinstance(init_args, dict):
             init_args = UNetConfig(**init_args)
+            logger.info(f"  Created UNetConfig with input_size={init_args.input_size}")
         
         converted_config['backbone'] = GenerativeBackboneConfig(
             type=backbone_type,
@@ -132,30 +156,6 @@ def convert_config_dict_to_dataclasses(config_dict: Dict[str, Any]) -> Dict[str,
         except Exception as e:
             logger.warning(f"Failed to convert logging config: {e}")
     
-    # This code should never be reached due to the fail-fast check above
-    # Convert backbone config
-    if 'backbone' in converted_config and isinstance(converted_config['backbone'], dict):
-        raise RuntimeError("Backbone config synthesis should have been caught by fail-fast check")
-        try:
-            backbone_dict = converted_config['backbone']
-            backbone_type = backbone_dict.get('type', 'unet')
-            
-            if backbone_type == 'unet':
-                init_args = backbone_dict.get('init_args', {})
-                if isinstance(init_args, dict):
-                    unet_config = UNetConfig(**init_args)
-                else:
-                    unet_config = init_args
-                
-                converted_config['backbone'] = GenerativeBackboneConfig(
-                    type=backbone_type,
-                    init_args=unet_config
-                )
-            else:
-                # For other backbone types, create with the existing structure
-                converted_config['backbone'] = GenerativeBackboneConfig(**backbone_dict)
-        except Exception as e:
-            logger.warning(f"Failed to convert backbone config: {e}")
 
     # Convert process_sampler config with proper nested handling
     if 'process_sampler' in converted_config and isinstance(converted_config['process_sampler'], dict):
@@ -190,8 +190,8 @@ def convert_config_dict_to_dataclasses(config_dict: Dict[str, Any]) -> Dict[str,
             if encoder_type == 'multimodal':
                 converted_config['condition_encoder'] = MultiModalEncoderConfig(**encoder_dict)
             elif encoder_type == 'pretrained_text':
-                # This should never be reached due to fail-fast check
-                raise RuntimeError("TextEncoder config synthesis should have been caught by fail-fast check")
+                # Handle text encoder configs
+                converted_config['condition_encoder'] = encoder_dict
             elif encoder_type:
                 # For single modality encoders
                 converted_config['condition_encoder'] = ModalityEncoderConfig(**encoder_dict)
