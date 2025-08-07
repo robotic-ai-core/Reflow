@@ -26,14 +26,26 @@ class TestWandbRunIdArgument:
         cli = LightningReflowCLI.__new__(LightningReflowCLI)
         parser = cli._create_resume_parser()
         
-        # Parse args with --wandb-run-id
+        # Test 1: With explicit ID
         args = parser.parse_args([
             '--checkpoint-path', '/path/to/checkpoint.ckpt',
             '--wandb-run-id', 'custom-run-id-123'
         ])
-        
         assert hasattr(args, 'wandb_run_id')
         assert args.wandb_run_id == 'custom-run-id-123'
+        
+        # Test 2: Flag without value (force new run)
+        args = parser.parse_args([
+            '--checkpoint-path', '/path/to/checkpoint.ckpt',
+            '--wandb-run-id'
+        ])
+        assert args.wandb_run_id == 'new'
+        
+        # Test 3: No flag at all
+        args = parser.parse_args([
+            '--checkpoint-path', '/path/to/checkpoint.ckpt'
+        ])
+        assert args.wandb_run_id is None
     
     def test_wandb_run_id_passed_to_resume_cli(self):
         """Test that --wandb-run-id is passed to resume_cli method."""
@@ -185,6 +197,51 @@ class TestWandbRunIdArgument:
                     
                     # Should use the specified run ID
                     assert wandb_config_content == 'brand-new-run-id'
+                    
+            finally:
+                Path(tmp_ckpt.name).unlink(missing_ok=True)
+
+
+    def test_force_new_run_with_wandb_run_id_flag(self):
+        """Test that --wandb-run-id without value forces a new W&B run."""
+        with tempfile.NamedTemporaryFile(suffix='.ckpt', delete=False) as tmp_ckpt:
+            # Create checkpoint WITH embedded W&B run ID
+            checkpoint = {
+                'epoch': 5,
+                'global_step': 1000,
+                'state_dict': {},
+                'self_contained_metadata': {
+                    'wandb_run_id': 'existing-checkpoint-run-id',
+                    'embedded_config_content': 'model:\n  class_path: test.Model\n'
+                }
+            }
+            torch.save(checkpoint, tmp_ckpt.name)
+            
+            try:
+                # Track what happens with W&B run ID
+                captured_run_id = None
+                original_add_wandb = LightningReflow._add_wandb_resume_config
+                
+                def capture_wandb_config(self, cmd, wandb_run_id, embedded_config_yaml):
+                    nonlocal captured_run_id
+                    captured_run_id = wandb_run_id
+                    # Don't actually add the config to avoid file issues
+                    return None
+                
+                with patch.object(LightningReflow, '_add_wandb_resume_config', capture_wandb_config):
+                    with patch('subprocess.run') as mock_run:
+                        mock_run.return_value = Mock(returncode=0)
+                        
+                        with patch('sys.exit'):
+                            reflow = LightningReflow()
+                            reflow.resume_cli(
+                                resume_source=tmp_ckpt.name,
+                                wandb_run_id='new'  # Force new run
+                            )
+                    
+                    # Should NOT use the checkpoint's run ID
+                    # Should have None to create a new run
+                    assert captured_run_id is None
                     
             finally:
                 Path(tmp_ckpt.name).unlink(missing_ok=True)

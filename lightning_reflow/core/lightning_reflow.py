@@ -277,7 +277,7 @@ class LightningReflow:
             use_wandb_config: Whether to use config from W&B run (for W&B artifacts)
             entity: W&B entity (for artifact resumption)
             project: W&B project (for artifact resumption)
-            wandb_run_id: Explicit W&B run ID to resume (overrides checkpoint's run ID)
+            wandb_run_id: W&B run ID control - str for specific ID, 'new' to force new run, None to use checkpoint's ID
             extra_cli_args: Additional CLI arguments to pass through
         """
         import os
@@ -298,8 +298,14 @@ class LightningReflow:
                 project=project
             )
             
-            # Use explicit wandb_run_id if provided, otherwise extract from checkpoint
-            if wandb_run_id:
+            # Handle W&B run ID based on three cases:
+            # 1. Explicit ID provided: use that ID
+            # 2. 'new' (flag without value): force new run, ignore checkpoint's ID
+            # 3. None (flag not used): extract from checkpoint
+            if wandb_run_id == 'new':
+                logger.info("🆕 Forcing new W&B run (--wandb-run-id flag without value)")
+                wandb_run_id = None  # Will create new run
+            elif wandb_run_id:
                 logger.info(f"📌 Using explicit W&B run ID: {wandb_run_id}")
             else:
                 wandb_run_id = self._extract_wandb_run_id_from_checkpoint(checkpoint_path)

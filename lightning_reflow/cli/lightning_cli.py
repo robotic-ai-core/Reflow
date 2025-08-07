@@ -281,8 +281,10 @@ class LightningReflowCLI(LightningCLI):
         
         parser.add_argument(
             "--wandb-run-id",
-            type=str,
-            help="W&B run ID to resume (overrides checkpoint's run ID). Allows resuming to a different or new run."
+            nargs='?',
+            const='new',  # Value when flag is present without argument
+            default=None,  # Value when flag is not present at all
+            help="W&B run ID control: Provide ID to resume specific run, use flag alone to force new run, omit to use checkpoint's ID."
         )
         
         return parser
