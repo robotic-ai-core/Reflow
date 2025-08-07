@@ -215,14 +215,35 @@ class LightningReflow:
             
             # Merge additional config if available
             if additional_config:
-                logger.info("Applying additional configuration from checkpoint source")
+                logger.info("Loading configuration from checkpoint")
                 # Parse YAML string if needed
                 if isinstance(additional_config, str):
                     import yaml
                     additional_config = yaml.safe_load(additional_config)
-                merged_config = self.config_loader._apply_overrides(self.config, additional_config)
+                
+                # IMPORTANT: Apply configs in correct priority order:
+                # 1. Start with checkpoint config as base (lowest priority)
+                # 2. Apply user's config files and overrides on top (highest priority)
+                
+                # Store the original user overrides
+                user_config = self.config
+                
+                # First load checkpoint config as base
+                from omegaconf import OmegaConf
+                checkpoint_config = additional_config if not hasattr(additional_config, '__dict__') else OmegaConf.create(additional_config)
+                
+                # Then apply user's config on top of checkpoint config
+                # This ensures user overrides take priority over checkpoint config
+                merged_config = self.config_loader._apply_overrides(checkpoint_config, user_config)
+                
+                # Convert DictConfig to regular dict for easier access
+                self.config = OmegaConf.to_container(merged_config, resolve=True)
                 self.config_loader.config = merged_config
-                self.config = merged_config
+                
+                logger.info(f"Config after merge has keys: {list(self.config.keys()) if self.config else 'None'}")
+                logger.info("Applied user config overrides on top of checkpoint config")
+            else:
+                logger.warning("No additional_config from checkpoint - config may be incomplete")
             
             # Run training with checkpoint
             return self.fit(ckpt_path=str(checkpoint_path))
@@ -505,11 +526,20 @@ class LightningReflow:
                 else:
                     logger.info("🔄 Falling back to embedded config extraction")
                     
-                config_model_section = self.config_loader.get_section("model", {})
+                config_model_section = self.config_loader.get_section("model")
+                logger.info(f"config_model_section from config_loader: {config_model_section is not None}, type={type(config_model_section) if config_model_section else 'None'}")
+                
+                # Also try direct access to self.config
+                if hasattr(self, 'config') and self.config and 'model' in self.config:
+                    logger.info(f"Found model in self.config directly")
+                    config_model_section = self.config['model']
+                    logger.info(f"config_model_section type: {type(config_model_section)}, value: {config_model_section if not isinstance(config_model_section, dict) else 'is a dict'}")
                 
                 if config_model_section:
+                    logger.info(f"config_model_section keys: {list(config_model_section.keys()) if isinstance(config_model_section, dict) else 'Not a dict'}")
                     # The primary source of arguments should be the 'init_args' subsection
                     config_model_args = config_model_section.get("init_args", {})
+                    logger.info(f"config_model_args: {list(config_model_args.keys()) if isinstance(config_model_args, dict) and config_model_args else 'Empty or None'}")
                     if isinstance(config_model_args, dict):
                         model_args.update(config_model_args)
                     
@@ -524,11 +554,22 @@ class LightningReflow:
             # Convert any nested dictionaries (like 'backbone') to their proper dataclass types
             try:
                 from ..utils.config.config_synthesis import convert_config_dict_to_dataclasses
+                logger.info(f"Converting model_args with keys: {list(model_args.keys())}")
+                if 'backbone' in model_args and isinstance(model_args['backbone'], dict):
+                    if 'init_args' in model_args['backbone'] and isinstance(model_args['backbone']['init_args'], dict):
+                        logger.info(f"  backbone.init_args.input_size BEFORE conversion: {model_args['backbone']['init_args'].get('input_size', 'NOT FOUND')}")
                 model_args = convert_config_dict_to_dataclasses(model_args)
-            except ImportError:
-                logger.warning("Config synthesis not available, continuing with dict args")
+                logger.info(f"Config conversion successful")
+                if 'backbone' in model_args:
+                    logger.info(f"  backbone type after conversion: {type(model_args['backbone'])}")
+                    if hasattr(model_args['backbone'], 'init_args'):
+                        logger.info(f"  backbone.init_args.input_size AFTER conversion: {getattr(model_args['backbone'].init_args, 'input_size', 'NO ATTR')}")
+            except ImportError as e:
+                logger.warning(f"Config synthesis import failed: {e}, continuing with dict args")
             except Exception as e:
                 logger.warning(f"Config synthesis failed: {e}, continuing with dict args")
+                import traceback
+                traceback.print_exc()
             
             logger.info(f"Creating model: {self.model_class.__name__} with args: {list(model_args.keys()) if model_args else 'EMPTY'}")
             
