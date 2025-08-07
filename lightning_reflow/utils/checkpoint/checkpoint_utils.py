@@ -161,11 +161,8 @@ def extract_wandb_run_id(checkpoint: Dict[str, Any]) -> Optional[str]:
     Returns:
         W&B run ID if found, None otherwise
     """
-    # Check root level first (simplest format, used in some tests)
-    if 'wandb_run_id' in checkpoint:
-        run_id = checkpoint['wandb_run_id']
-        if isinstance(run_id, str) and run_id.strip():
-            return run_id.strip()
+    # NOTE: We do NOT check root level 'wandb_run_id' for security reasons.
+    # Only extract from trusted metadata locations to prevent tampering.
     
     # Check self_contained_metadata (modern format)
     if 'self_contained_metadata' in checkpoint:
