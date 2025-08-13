@@ -80,15 +80,15 @@ def ensure_essential_callbacks(callbacks: List[Callback], trainer=None) -> List[
     callbacks = list(callbacks) if callbacks else []
     
     # Ensure PauseCallback
-    _ensure_pause_callback(callbacks, trainer)
+    _ensure_pause_callback(callbacks)
     
     # Ensure StepOutputLoggerCallback  
-    _ensure_step_output_logger(callbacks, trainer)
+    _ensure_step_output_logger(callbacks)
     
     return callbacks
 
 
-def _ensure_pause_callback(callbacks: List[Callback], trainer=None) -> None:
+def _ensure_pause_callback(callbacks: List[Callback]) -> None:
     """Ensure PauseCallback is present in callbacks list."""
     try:
         from ..callbacks.pause import PauseCallback
@@ -107,7 +107,7 @@ def _ensure_pause_callback(callbacks: List[Callback], trainer=None) -> None:
         logger.warning(f"Failed to ensure PauseCallback: {e}")
 
 
-def _ensure_step_output_logger(callbacks: List[Callback], trainer=None) -> None:
+def _ensure_step_output_logger(callbacks: List[Callback]) -> None:
     """Ensure StepOutputLoggerCallback is present in callbacks list."""
     try:
         from ..callbacks.logging import StepOutputLoggerCallback

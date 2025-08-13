@@ -112,7 +112,6 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         return self._state_machine.is_upload_all_requested()
 
     def on_train_start(self, trainer: Trainer, pl_module: LightningModule):
-        # Call parent's on_train_start which already handles logger check
         super().on_train_start(trainer, pl_module)
         
         # Check for debug hooks and trigger appropriate states
