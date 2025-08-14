@@ -129,10 +129,10 @@ class LightningReflowCLI(LightningCLI):
                 
                 # Extract and set environment variables early
                 from ..utils.logging.environment_manager import EnvironmentManager
-                env_vars, processed_configs = EnvironmentManager.extract_environment_from_configs(config_paths)
+                env_vars = EnvironmentManager.extract_environment_from_configs(config_paths)
                 
                 if env_vars:
-                    EnvironmentManager.set_environment_variables(env_vars, processed_configs)
+                    EnvironmentManager.set_environment_variables(env_vars, config_paths)
                     logger.info(f"✅ Set {len(env_vars)} environment variables EARLY (before instantiation)")
                     
                     # Log critical environment variables for debugging

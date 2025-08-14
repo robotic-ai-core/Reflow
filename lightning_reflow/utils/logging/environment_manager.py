@@ -13,9 +13,8 @@ import os
 import sys
 import yaml
 import logging
-import tempfile
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..checkpoint.manager_state import EnvironmentManagerState
@@ -48,20 +47,17 @@ class EnvironmentManager:
         logger.info("🔗 EnvironmentManager registered with LightningReflow manager state system")
     
     @staticmethod
-    def extract_environment_from_configs(config_paths: List[Path]) -> Tuple[Dict[str, str], List[Tuple[Path, Path]]]:
+    def extract_environment_from_configs(config_paths: List[Path]) -> Dict[str, str]:
         """
-        Extract environment variables from config files and create cleaned versions.
+        Extract environment variables from config files.
         
         Args:
             config_paths: List of config file paths to process
             
         Returns:
-            Tuple of:
-            - Dictionary of environment variables to set
-            - List of (original_path, cleaned_path) tuples for cleanup
+            Dictionary of environment variables to set
         """
         environment_vars = {}
-        modified_files = []
         
         for config_path in config_paths:
             if not config_path.exists():
@@ -71,20 +67,14 @@ class EnvironmentManager:
             try:
                 with open(config_path, 'r') as f:
                     config = yaml.safe_load(f)
-                    
-                cleaned_config = config.copy() if config else {}
-                config_modified = False
                 
                 # Extract from top-level environment section
                 if config and 'environment' in config:
                     environment_vars.update(config['environment'])
-                    del cleaned_config['environment']
-                    config_modified = True
                 
                 # Extract from EnvironmentCallback configurations
                 if config and 'trainer' in config and 'callbacks' in config['trainer']:
                     callbacks = config['trainer']['callbacks']
-                    cleaned_callbacks = []
                     
                     for callback in callbacks:
                         if isinstance(callback, dict):
@@ -94,51 +84,11 @@ class EnvironmentManager:
                                 init_args = callback.get('init_args', {})
                                 if 'env_vars' in init_args:
                                     environment_vars.update(init_args['env_vars'])
-                                    
-                                # Remove env_vars from the callback config for cleaned version
-                                cleaned_callback = callback.copy()
-                                if 'init_args' in cleaned_callback:
-                                    cleaned_init_args = cleaned_callback['init_args'].copy()
-                                    if 'env_vars' in cleaned_init_args:
-                                        del cleaned_init_args['env_vars']
-                                        # Only keep the callback if it has other init_args
-                                        if cleaned_init_args:
-                                            cleaned_callback['init_args'] = cleaned_init_args
-                                            cleaned_callbacks.append(cleaned_callback)
-                                        # If no other init_args, skip this callback entirely
-                                        config_modified = True
-                                    else:
-                                        cleaned_callbacks.append(cleaned_callback)
-                                else:
-                                    # Keep callback without init_args
-                                    cleaned_callbacks.append(cleaned_callback)
-                            else:
-                                # Keep non-EnvironmentCallback callbacks as-is
-                                cleaned_callbacks.append(callback)
-                        else:
-                            # Keep non-dict callbacks as-is
-                            cleaned_callbacks.append(callback)
-                    
-                    if config_modified:
-                        cleaned_config['trainer']['callbacks'] = cleaned_callbacks
-                
-                # Create temporary cleaned config file if modifications were made
-                if config_modified:
-                    # Create temp file in system temp directory with descriptive name
-                    temp_fd, temp_config_path = tempfile.mkstemp(
-                        suffix=config_path.suffix,
-                        prefix=f'{config_path.stem}_cleaned_',
-                        dir=tempfile.gettempdir()
-                    )
-                    with os.fdopen(temp_fd, 'w') as f:
-                        yaml.dump(cleaned_config, f, default_flow_style=False, sort_keys=False)
-                    
-                    modified_files.append((config_path, Path(temp_config_path)))
                     
             except Exception as e:
                 print(f"[WARNING] Failed to process config file {config_path}: {e}")
                 
-        return environment_vars, modified_files
+        return environment_vars
     
     @classmethod
     def set_environment_variables(cls, env_vars: Dict[str, str], config_sources: List[str] = None) -> None:
@@ -177,21 +127,6 @@ class EnvironmentManager:
         print(f"[INFO] Environment state tracked for checkpoint persistence")
     
     @staticmethod
-    def cleanup_temp_files(modified_files: List[Tuple[Path, Path]]) -> None:
-        """
-        Clean up temporary config files.
-        
-        Args:
-            modified_files: List of (original_path, temp_path) tuples
-        """
-        for original_file, temp_file in modified_files:
-            try:
-                if Path(temp_file).exists():
-                    Path(temp_file).unlink()
-            except Exception as e:
-                print(f"[WARNING] Failed to cleanup temp config file {temp_file}: {e}")
-    
-    @staticmethod
     def parse_sys_argv_configs() -> List[Path]:
         """
         Parse --config arguments from sys.argv.
@@ -213,23 +148,6 @@ class EnvironmentManager:
                 i += 1
                 
         return config_files
-    
-    @staticmethod
-    def update_sys_argv_with_cleaned_configs(modified_files: List[Tuple[Path, Path]]) -> None:
-        """
-        Update sys.argv to use cleaned config files.
-        
-        Args:
-            modified_files: List of (original_path, temp_path) tuples
-        """
-        for original_path, temp_path in modified_files:
-            for j, arg in enumerate(sys.argv):
-                if arg == str(original_path):
-                    sys.argv[j] = str(temp_path)
-                elif arg == '--config' and j + 1 < len(sys.argv) and sys.argv[j + 1] == str(original_path):
-                    sys.argv[j + 1] = str(temp_path)
-                elif arg.startswith(f'--config={original_path}'):
-                    sys.argv[j] = f'--config={temp_path}'
     
     @classmethod
     def restore_environment_from_checkpoint(cls, checkpoint_state: Dict[str, any]) -> bool:

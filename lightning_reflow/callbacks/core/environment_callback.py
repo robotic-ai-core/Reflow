@@ -113,7 +113,7 @@ class EnvironmentCallback(Callback):
         
         # Extract environment variables with proper precedence
         try:
-            env_vars, _ = EnvironmentManager.extract_environment_from_configs(self.config_paths)
+            env_vars = EnvironmentManager.extract_environment_from_configs(self.config_paths)
             
             if env_vars:
                 # Store original values for cleanup
