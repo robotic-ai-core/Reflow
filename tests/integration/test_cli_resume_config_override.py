@@ -63,7 +63,9 @@ class TestCLIResumeIntegration:
             'global_step': 500,
             'state_dict': {'dummy': torch.tensor([1.0])},
             'lightning_config': checkpoint_config,
-            'wandb_run_id': 'test-run-123'
+            'self_contained_metadata': {
+                'wandb_run_id': 'test-run-123'
+            }
         }, checkpoint_path)
         
         # Create first override config
