@@ -13,6 +13,7 @@ import os
 import sys
 import yaml
 import logging
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, TYPE_CHECKING
 
@@ -123,11 +124,16 @@ class EnvironmentManager:
                 
                 # Create temporary cleaned config file if modifications were made
                 if config_modified:
-                    temp_config_path = config_path.with_suffix('.tmp' + config_path.suffix)
-                    with open(temp_config_path, 'w') as f:
+                    # Create temp file in system temp directory with descriptive name
+                    temp_fd, temp_config_path = tempfile.mkstemp(
+                        suffix=config_path.suffix,
+                        prefix=f'{config_path.stem}_cleaned_',
+                        dir=tempfile.gettempdir()
+                    )
+                    with os.fdopen(temp_fd, 'w') as f:
                         yaml.dump(cleaned_config, f, default_flow_style=False, sort_keys=False)
                     
-                    modified_files.append((config_path, temp_config_path))
+                    modified_files.append((config_path, Path(temp_config_path)))
                     
             except Exception as e:
                 print(f"[WARNING] Failed to process config file {config_path}: {e}")
