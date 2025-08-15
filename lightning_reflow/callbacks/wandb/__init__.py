@@ -1,3 +1,9 @@
-from .wandb_watch_callback import WandbWatchCallback
+"""
+W&B-related callbacks for Lightning Reflow.
+"""
 
-__all__ = ["WandbWatchCallback"] 
+from .wandb_artifact_checkpoint import WandbArtifactCheckpoint
+
+__all__ = [
+    "WandbArtifactCheckpoint",
+]

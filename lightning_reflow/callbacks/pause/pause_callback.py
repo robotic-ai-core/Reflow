@@ -608,7 +608,12 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         # Find WandbArtifactCheckpoint callback
         wandb_callback = None
         for callback in trainer.callbacks:
-            if hasattr(callback, '_upload_pause_checkpoint_artifact'):
+            # Check for WandbArtifactCheckpoint callback with upload_pause_checkpoint method
+            if hasattr(callback, 'upload_pause_checkpoint'):
+                wandb_callback = callback
+                break
+            # Fallback to old method name for backward compatibility
+            elif hasattr(callback, '_upload_pause_checkpoint_artifact'):
                 wandb_callback = callback
                 break
         
@@ -619,7 +624,11 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         
         # Attempt upload with proper error handling
         try:
-            artifact_path = self._upload_pause_checkpoint_artifact(wandb_callback, trainer, checkpoint_path)
+            # Use new method if available, otherwise use fallback
+            if hasattr(wandb_callback, 'upload_pause_checkpoint'):
+                artifact_path = wandb_callback.upload_pause_checkpoint(trainer, trainer.lightning_module, checkpoint_path)
+            else:
+                artifact_path = self._upload_pause_checkpoint_artifact(wandb_callback, trainer, checkpoint_path)
             print(f"✅ Pause checkpoint uploaded to W&B successfully")
             return artifact_path
             

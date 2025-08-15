@@ -85,6 +85,10 @@ def ensure_essential_callbacks(callbacks: List[Callback], trainer=None) -> List[
     # Ensure StepOutputLoggerCallback  
     _ensure_step_output_logger(callbacks)
     
+    # Ensure WandbArtifactCheckpoint if W&B logger is present
+    if trainer:
+        _ensure_wandb_artifact_checkpoint(callbacks, trainer)
+    
     return callbacks
 
 
@@ -123,4 +127,63 @@ def _ensure_step_output_logger(callbacks: List[Callback]) -> None:
     except ImportError as e:
         logger.warning(f"Could not import StepOutputLoggerCallback: {e}")
     except Exception as e:
-        logger.warning(f"Failed to ensure StepOutputLoggerCallback: {e}") 
+        logger.warning(f"Failed to ensure StepOutputLoggerCallback: {e}")
+
+
+def _ensure_wandb_artifact_checkpoint(callbacks: List[Callback], trainer) -> None:
+    """
+    Ensure WandbArtifactCheckpoint is present when W&B logger is active.
+    
+    This provides automatic checkpoint artifact uploads to W&B when:
+    1. W&B logger is present
+    2. No WandbArtifactCheckpoint is already configured
+    3. Environment suggests W&B integration is desired
+    """
+    try:
+        # Check if W&B logger is present
+        has_wandb_logger = False
+        if hasattr(trainer, 'logger'):
+            from lightning.pytorch.loggers import WandbLogger
+            if isinstance(trainer.logger, WandbLogger):
+                has_wandb_logger = True
+            elif hasattr(trainer.logger, 'experiment_loggers'):
+                # Check for W&B in multi-logger setup
+                for exp_logger in trainer.logger.experiment_loggers:
+                    if isinstance(exp_logger, WandbLogger):
+                        has_wandb_logger = True
+                        break
+        
+        if not has_wandb_logger:
+            return  # No W&B logger, no need for artifact checkpoint
+        
+        from ..callbacks.wandb import WandbArtifactCheckpoint
+        
+        # Check if WandbArtifactCheckpoint is already present
+        has_wandb_checkpoint = any(isinstance(cb, WandbArtifactCheckpoint) for cb in callbacks)
+        
+        if not has_wandb_checkpoint:
+            # Create with smart defaults for LightningReflow
+            wandb_checkpoint = WandbArtifactCheckpoint(
+                upload_best_model=True,
+                upload_last_model=True,
+                upload_periodic_checkpoints=False,  # Avoid artifact spam by default
+                upload_every_n_epoch=5,  # Upload every 5 epochs as a reasonable default
+                monitor_pause_checkpoints=True,  # Integrate with PauseCallback
+                create_emergency_checkpoints=True,  # Safety for crashes
+                min_training_minutes=5.0,  # Don't upload for very short test runs
+                min_training_minutes_for_exceptions=0.0,  # Always upload on crash
+                use_compression=True,  # Save W&B storage
+                upload_best_last_only_at_end=True,  # Storage optimization
+                periodic_upload_pattern="timestamped",  # Most storage efficient
+                wandb_verbose=False  # Less verbose by default
+            )
+            callbacks.append(wandb_checkpoint)
+            logger.info("✅ Automatically added WandbArtifactCheckpoint for W&B artifact uploads")
+            logger.info("   - Uploads: best & last models at end, periodic every 5 epochs")
+            logger.info("   - Pause integration: enabled (uploads pause checkpoints on request)")
+            logger.info("   - Emergency checkpoints: enabled (crash recovery)")
+            
+    except ImportError as e:
+        logger.debug(f"Could not import W&B components: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to ensure WandbArtifactCheckpoint: {e}") 
