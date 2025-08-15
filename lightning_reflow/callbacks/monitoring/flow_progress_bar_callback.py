@@ -647,14 +647,18 @@ class FlowProgressBarCallback(LearningRateMonitor):
                 # Use the robust dataloader length getter
                 num_training_batches = self._get_dataloader_length()
             if isinstance(val_check_interval, int) and val_check_interval > 0:
-                # IMPORTANT: PyTorch Lightning API inconsistency!
+                # IMPORTANT: PyTorch Lightning API inconsistency (confirmed in official sources)!
                 # When val_check_interval is an integer, Lightning counts TRAINING BATCHES (forward passes),
                 # NOT optimization steps like max_steps does.
                 # 
+                # Official confirmation:
+                # - max_steps counts global_step (optimizer steps): https://github.com/Lightning-AI/pytorch-lightning/discussions/12220
+                # - val_check_interval counts training batches: https://github.com/Lightning-AI/pytorch-lightning/issues/17207
+                #
                 # Example with accumulate_grad_batches=16:
                 #   - val_check_interval=1600 → validation every 1600 forward passes
                 #   - This equals only 100 optimization steps (1600/16)
-                #   - But max_steps=256000 counts optimization steps
+                #   - But max_steps counts optimization steps
                 #
                 # This is why the interval progress bar shows different units than global steps.
                 # The interval bar correctly shows training batches to match Lightning's behavior.
