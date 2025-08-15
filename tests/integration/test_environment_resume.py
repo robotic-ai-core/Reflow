@@ -163,7 +163,7 @@ class TestEnvironmentVariableResume:
         from lightning_reflow.utils.logging import EnvironmentManager
         
         # Extract with proper precedence (later configs override earlier ones)
-        env_vars = EnvironmentManager.extract_environment_from_configs([base_file, override_file])
+        env_vars, _ = EnvironmentManager.extract_environment_from_configs([base_file, override_file])
         
         # Verify precedence
         assert env_vars.get("TEST_PRECEDENCE_VAR") == "override_value"

@@ -14,7 +14,7 @@ import sys
 import yaml
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..checkpoint.manager_state import EnvironmentManagerState
@@ -47,7 +47,7 @@ class EnvironmentManager:
         logger.info("🔗 EnvironmentManager registered with LightningReflow manager state system")
     
     @staticmethod
-    def extract_environment_from_configs(config_paths: List[Path]) -> Dict[str, str]:
+    def extract_environment_from_configs(config_paths: List[Path]) -> Tuple[Dict[str, str], List[str]]:
         """
         Extract environment variables from config files.
         
@@ -55,9 +55,10 @@ class EnvironmentManager:
             config_paths: List of config file paths to process
             
         Returns:
-            Dictionary of environment variables to set
+            Tuple of (environment variables dict, list of processed config files)
         """
         environment_vars = {}
+        processed_files = []
         
         for config_path in config_paths:
             if not config_path.exists():
@@ -67,6 +68,9 @@ class EnvironmentManager:
             try:
                 with open(config_path, 'r') as f:
                     config = yaml.safe_load(f)
+                
+                # Track that we processed this file
+                processed_files.append(str(config_path))
                 
                 # Extract from top-level environment section
                 if config and 'environment' in config:
@@ -88,7 +92,7 @@ class EnvironmentManager:
             except Exception as e:
                 print(f"[WARNING] Failed to process config file {config_path}: {e}")
                 
-        return environment_vars
+        return environment_vars, processed_files
     
     @classmethod
     def set_environment_variables(cls, env_vars: Dict[str, str], config_sources: List[str] = None) -> None:

@@ -61,7 +61,7 @@ environment:
         config_path.write_text(config_content)
         
         # Extract environment variables
-        env_vars = EnvironmentManager.extract_environment_from_configs([config_path])
+        env_vars, _ = EnvironmentManager.extract_environment_from_configs([config_path])
         
         # Verify extraction worked
         assert isinstance(env_vars, dict)
@@ -123,7 +123,7 @@ environment:
         })
         
         # Process config file
-        env_vars = EnvironmentManager.extract_environment_from_configs([config_path])
+        env_vars, _ = EnvironmentManager.extract_environment_from_configs([config_path])
         
         # Apply environment variables
         EnvironmentManager.set_environment_variables(env_vars)
@@ -147,7 +147,7 @@ environment: {}
         config_path.write_text(config_content)
         
         # Should handle empty environment section gracefully
-        env_vars = EnvironmentManager.extract_environment_from_configs([config_path])
+        env_vars, _ = EnvironmentManager.extract_environment_from_configs([config_path])
         assert isinstance(env_vars, dict)
         assert len(env_vars) == 0
 
@@ -163,7 +163,7 @@ model:
         config_path.write_text(config_content)
         
         # Should handle missing environment section gracefully
-        env_vars = EnvironmentManager.extract_environment_from_configs([config_path])
+        env_vars, _ = EnvironmentManager.extract_environment_from_configs([config_path])
         assert isinstance(env_vars, dict)
         assert len(env_vars) == 0
 
@@ -266,7 +266,7 @@ environment:
         config2_path.write_text(config2_content)
         
         # Extract from both configs
-        env_vars = EnvironmentManager.extract_environment_from_configs([config1_path, config2_path])
+        env_vars, _ = EnvironmentManager.extract_environment_from_configs([config1_path, config2_path])
         
         # Verify merging behavior
         assert env_vars["VAR_1"] == "from_config_1"
@@ -279,7 +279,7 @@ environment:
         nonexistent_path = tmp_path / "nonexistent.yaml"
         
         # Should handle nonexistent files gracefully
-        env_vars = EnvironmentManager.extract_environment_from_configs([nonexistent_path])
+        env_vars, _ = EnvironmentManager.extract_environment_from_configs([nonexistent_path])
         assert isinstance(env_vars, dict)
         assert len(env_vars) == 0
 
@@ -372,7 +372,7 @@ environment:
         invalid_path.write_text(invalid_yaml_content)
         
         # Should handle invalid YAML gracefully
-        env_vars = EnvironmentManager.extract_environment_from_configs([invalid_path])
+        env_vars, _ = EnvironmentManager.extract_environment_from_configs([invalid_path])
         assert isinstance(env_vars, dict)
         # May be empty due to parsing error
 
@@ -386,7 +386,7 @@ environment:
             restricted_file.chmod(0o000)  # Remove all permissions
             
             # Should handle permission errors gracefully
-            env_vars = EnvironmentManager.extract_environment_from_configs([restricted_file])
+            env_vars, _ = EnvironmentManager.extract_environment_from_configs([restricted_file])
             assert isinstance(env_vars, dict)
             
         except (OSError, PermissionError):
@@ -401,9 +401,11 @@ environment:
     def test_empty_config_file_list(self):
         """Test handling of empty config file list."""
         # Should handle empty list gracefully
-        env_vars = EnvironmentManager.extract_environment_from_configs([])
+        env_vars, config_files = EnvironmentManager.extract_environment_from_configs([])
         assert isinstance(env_vars, dict)
         assert len(env_vars) == 0
+        assert isinstance(config_files, list)
+        assert len(config_files) == 0
 
 
 if __name__ == "__main__":
