@@ -21,6 +21,24 @@ SCIENTIFIC_THRESHOLD = 1e-6
 
 
 class FlowProgressBarCallback(LearningRateMonitor):
+    """
+    Progress bar callback for Lightning training with dual progress bars.
+    
+    IMPORTANT NOTE ON PYTORCH LIGHTNING'S INCONSISTENT UNITS:
+    - Global progress bar shows OPTIMIZATION STEPS (gradient updates)
+    - Interval progress bar shows TRAINING BATCHES (forward passes)
+    
+    This reflects PyTorch Lightning's internal inconsistency:
+    - max_steps counts optimization steps
+    - val_check_interval (when integer) counts training batches
+    
+    With gradient accumulation (e.g., accumulate_grad_batches=16):
+    - 16 training batches = 1 optimization step
+    - val_check_interval=1600 means validation every 1600 training batches
+    - This equals only 100 optimization steps
+    
+    See the config file documentation for more details.
+    """
     def __init__(self, 
                  refresh_rate: int = 1, 
                  process_position: int = 0, 
@@ -629,8 +647,17 @@ class FlowProgressBarCallback(LearningRateMonitor):
                 # Use the robust dataloader length getter
                 num_training_batches = self._get_dataloader_length()
             if isinstance(val_check_interval, int) and val_check_interval > 0:
-                # Lightning's val_check_interval counts training batches directly
-                # Return the value as-is since we want to track training batches, not optimizer steps
+                # IMPORTANT: PyTorch Lightning API inconsistency!
+                # When val_check_interval is an integer, Lightning counts TRAINING BATCHES (forward passes),
+                # NOT optimization steps like max_steps does.
+                # 
+                # Example with accumulate_grad_batches=16:
+                #   - val_check_interval=1600 → validation every 1600 forward passes
+                #   - This equals only 100 optimization steps (1600/16)
+                #   - But max_steps=256000 counts optimization steps
+                #
+                # This is why the interval progress bar shows different units than global steps.
+                # The interval bar correctly shows training batches to match Lightning's behavior.
                 result = val_check_interval
                 # Cache the result for future calls
                 self._cached_val_interval_steps = result
