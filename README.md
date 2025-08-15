@@ -42,6 +42,7 @@ lightning_reflow/
 │   ├── environment/   # Environment variable management
 │   ├── monitoring/    # Training monitoring (progress bars, metrics)
 │   ├── pause/         # Pause/resume functionality
+│   ├── wandb/         # W&B integration (WandbArtifactCheckpoint)
 │   └── __init__.py    # Callback exports
 ├── cli/               # Enhanced Lightning CLI
 │   ├── __init__.py
@@ -236,7 +237,31 @@ callback = EnvironmentCallback(
 - Config precedence handling (config > checkpoint > system)
 - Validation and conflict resolution
 
-### 4. Enhanced CLI
+### 4. WandbArtifactCheckpoint
+
+Advanced checkpoint management with W&B artifact uploads:
+
+```python
+from lightning_reflow.callbacks.wandb import WandbArtifactCheckpoint
+
+callback = WandbArtifactCheckpoint(
+    upload_best_model=True,
+    upload_last_model=True,
+    upload_every_n_epoch=1,
+    monitor_pause_checkpoints=True,
+    use_compression=True,
+    create_emergency_checkpoints=True
+)
+```
+
+**Features:**
+- Automatic checkpoint upload to W&B as artifacts
+- Pause checkpoint monitoring and upload
+- Emergency checkpoint creation on exceptions
+- Configurable compression and upload strategies
+- Seamless integration with PauseCallback
+
+### 5. Enhanced CLI
 
 Extended Lightning CLI with resume capabilities:
 
@@ -401,6 +426,27 @@ trainer = pl.Trainer(
 - **Weights & Biases**: Optional deep integration for experiment tracking
 - **Checkpoint Format**: Compatible with standard Lightning checkpoints
 - **CLI Interface**: Drop-in replacement for LightningCLI
+
+## Important Notes
+
+### PyTorch Lightning Unit Inconsistency
+
+⚠️ **Critical**: PyTorch Lightning has an inconsistency in how it counts steps:
+
+- **`max_steps`**: Counts **optimization steps** (gradient updates after `optimizer.step()`)
+- **`val_check_interval`** (when integer): Counts **training batches** (forward passes)
+
+This means with `accumulate_grad_batches=16`:
+- `val_check_interval: 1600` = validation every 1600 forward passes = 100 optimization steps
+- To validate every 1600 optimization steps, use `val_check_interval: 25600` (1600 × 16)
+
+This inconsistency is documented in:
+- [PyTorch Lightning Discussion #12220](https://github.com/Lightning-AI/pytorch-lightning/discussions/12220)
+- [PyTorch Lightning Issue #17207](https://github.com/Lightning-AI/pytorch-lightning/issues/17207)
+
+The FlowProgressBarCallback in LightningReflow correctly handles this by showing:
+- **Global progress bar**: Optimization steps (matches `max_steps`)
+- **Interval progress bar**: Training batches (matches `val_check_interval`)
 
 ## Troubleshooting
 
