@@ -124,22 +124,31 @@ class WandbArtifactResumeStrategy(ResumeStrategy):
         """
         Find the checkpoint file within the downloaded artifact.
         
+        Handles both regular and compressed checkpoint files. If a compressed
+        checkpoint is found (.gz), it will be automatically decompressed.
+        
         Args:
             artifact_path: Path to the downloaded artifact directory
             
         Returns:
-            Path to the checkpoint file
+            Path to the checkpoint file (decompressed if necessary)
             
         Raises:
             ValueError: If no checkpoint file is found
         """
+        import gzip
+        import shutil
+        
         logger.debug(f"Searching for checkpoint in: {artifact_path}")
         
-        # Common checkpoint file patterns
+        # Extended checkpoint file patterns including compressed versions
         checkpoint_patterns = [
             "*.ckpt",           # Lightning checkpoints
+            "*.ckpt.gz",        # Compressed Lightning checkpoints
             "*.pt", "*.pth",    # PyTorch checkpoints
+            "*.pt.gz", "*.pth.gz",  # Compressed PyTorch checkpoints
             "*.pkl", "*.pickle", # Pickle files
+            "*.pkl.gz", "*.pickle.gz",  # Compressed pickle files
             "model.pt",         # Common naming convention
             "checkpoint.ckpt",  # Lightning default
             "last.ckpt",        # Lightning last checkpoint
@@ -166,11 +175,39 @@ class WandbArtifactResumeStrategy(ResumeStrategy):
             checkpoint_path = self._select_best_checkpoint(found_checkpoints)
         
         logger.info(f"Selected checkpoint: {checkpoint_path.name}")
+        
+        # Handle compressed checkpoints
+        if checkpoint_path.suffix == '.gz':
+            logger.info(f"Decompressing checkpoint: {checkpoint_path.name}")
+            
+            # Determine the decompressed filename
+            decompressed_name = checkpoint_path.stem  # Removes .gz extension
+            decompressed_path = checkpoint_path.parent / decompressed_name
+            
+            # Check if already decompressed
+            if decompressed_path.exists():
+                logger.info(f"Using existing decompressed checkpoint: {decompressed_path.name}")
+                return decompressed_path
+            
+            # Decompress the file
+            try:
+                with gzip.open(checkpoint_path, 'rb') as f_in:
+                    with open(decompressed_path, 'wb') as f_out:
+                        shutil.copyfileobj(f_in, f_out)
+                logger.info(f"Successfully decompressed to: {decompressed_path.name}")
+            except Exception as e:
+                logger.error(f"Failed to decompress checkpoint: {e}")
+                raise RuntimeError(f"Failed to decompress checkpoint {checkpoint_path.name}: {e}")
+            
+            return decompressed_path
+        
         return checkpoint_path
     
     def _select_best_checkpoint(self, checkpoints: list) -> Path:
         """
         Select the best checkpoint from multiple options.
+        
+        Handles both regular and compressed checkpoints in the selection process.
         
         Args:
             checkpoints: List of checkpoint paths
@@ -178,8 +215,13 @@ class WandbArtifactResumeStrategy(ResumeStrategy):
         Returns:
             Selected checkpoint path
         """
-        # Priority order for checkpoint selection
-        priority_names = ['best.ckpt', 'checkpoint.ckpt', 'last.ckpt', 'model.pt']
+        # Priority order for checkpoint selection (including compressed versions)
+        priority_names = [
+            'best.ckpt', 'best.ckpt.gz',
+            'checkpoint.ckpt', 'checkpoint.ckpt.gz',
+            'last.ckpt', 'last.ckpt.gz',
+            'model.pt', 'model.pt.gz'
+        ]
         
         # Try to find by priority name
         for priority_name in priority_names:
@@ -189,8 +231,20 @@ class WandbArtifactResumeStrategy(ResumeStrategy):
                     return checkpoint
         
         # If no priority match, take the largest file (likely most complete)
-        largest_checkpoint = max(checkpoints, key=lambda p: p.stat().st_size)
-        logger.info(f"Selected largest checkpoint: {largest_checkpoint.name}")
+        # For compressed files, we can't reliably compare sizes, so prefer uncompressed
+        uncompressed = [c for c in checkpoints if not c.suffix == '.gz']
+        compressed = [c for c in checkpoints if c.suffix == '.gz']
+        
+        if uncompressed:
+            largest_checkpoint = max(uncompressed, key=lambda p: p.stat().st_size)
+            logger.info(f"Selected largest uncompressed checkpoint: {largest_checkpoint.name}")
+        elif compressed:
+            largest_checkpoint = max(compressed, key=lambda p: p.stat().st_size)
+            logger.info(f"Selected largest compressed checkpoint: {largest_checkpoint.name}")
+        else:
+            largest_checkpoint = max(checkpoints, key=lambda p: p.stat().st_size)
+            logger.info(f"Selected largest checkpoint: {largest_checkpoint.name}")
+            
         return largest_checkpoint
     
     def _get_wandb_config(self, artifact_metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
