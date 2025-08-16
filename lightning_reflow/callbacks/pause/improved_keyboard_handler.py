@@ -34,6 +34,12 @@ class ImprovedKeyboardHandler:
         self._recent_chars = deque(maxlen=10)  # Track recent characters for pattern detection
         self._char_timestamps = deque(maxlen=10)  # Track timestamps of recent characters
         
+        # Track quiet periods to detect IDE reconnections
+        self._last_input_time = 0  # Last time we received any input
+        self._quiet_period_threshold = 30.0  # If no input for 30s, next burst might be IDE reconnection
+        self._burst_protection_window = 1.0  # Protect against bursts for 1s after quiet period
+        self._burst_protection_until = 0  # Timestamp until which we protect against bursts
+        
         # Patterns to ignore (common automated inputs from IDEs)
         self._ignore_patterns = [
             'pyenv',  # VSCode/Cursor pyenv activation
@@ -41,6 +47,9 @@ class ImprovedKeyboardHandler:
             'export',  # Environment variable exports
             'conda',   # Conda activation
             'eval',    # Shell eval commands
+            'module',  # Module load commands
+            '. /',     # Sourcing scripts
+            'PS1',     # Prompt modifications
         ]
     
     def is_available(self) -> bool:
@@ -102,18 +111,35 @@ class ImprovedKeyboardHandler:
         if current_time - self._startup_time < self._startup_grace_period:
             return True  # Ignore all input during grace period
         
+        # Check 2: Burst protection after quiet period (IDE reconnection detection)
+        if self._last_input_time > 0:
+            time_since_last_input = current_time - self._last_input_time
+            if time_since_last_input > self._quiet_period_threshold:
+                # Long quiet period detected - activate burst protection
+                self._burst_protection_until = current_time + self._burst_protection_window
+                # Clear recent tracking since this is likely a new session
+                self._recent_chars.clear()
+                self._char_timestamps.clear()
+        
+        # Check if we're in burst protection window
+        if current_time < self._burst_protection_until:
+            return True  # Ignore all input during burst protection
+        
         # Update recent character tracking
         self._recent_chars.append(char)
         self._char_timestamps.append(current_time)
+        self._last_input_time = current_time
         
-        # Check 2: Rapid multi-character input detection
+        # Check 3: Rapid multi-character input detection
         if len(self._char_timestamps) >= 5:
             # If 5+ characters arrived within 100ms, it's likely automated
             time_span = self._char_timestamps[-1] - self._char_timestamps[-5]
             if time_span < 0.1:  # 100ms for 5 characters
+                # Detected rapid input - extend burst protection
+                self._burst_protection_until = current_time + 0.5
                 return True
         
-        # Check 3: Pattern matching
+        # Check 4: Pattern matching
         if len(self._recent_chars) >= 3:
             # Build recent string from last few characters
             recent_string = ''.join(self._recent_chars)
@@ -121,10 +147,11 @@ class ImprovedKeyboardHandler:
             # Check if any ignore pattern is forming
             for pattern in self._ignore_patterns:
                 if pattern.startswith(recent_string.lower()) or recent_string.lower() in pattern:
-                    # Pattern detected or forming
+                    # Pattern detected or forming - extend burst protection
+                    self._burst_protection_until = current_time + 0.5
                     return True
         
-        # Check 4: Special case for 'p' after very rapid input
+        # Check 5: Special case for 'p' after very rapid input
         if char == 'p' and len(self._char_timestamps) >= 2:
             # If previous character was very recent (< 50ms), might be part of 'pyenv'
             if current_time - self._char_timestamps[-2] < 0.05:
@@ -165,11 +192,17 @@ class ImprovedKeyboardHandler:
                         # Check for automated input patterns
                         if is_bulk_input or self._is_automated_input(char):
                             # Automated input detected - ignore it
+                            current_time = time.time()
                             if is_bulk_input:
                                 print(f"🛡️ Ignored bulk input: {repr(''.join(chars))}")
-                            elif time.time() - self._startup_time < self._startup_grace_period:
-                                # During grace period - silent ignore
-                                pass
+                            elif current_time - self._startup_time < self._startup_grace_period:
+                                # During grace period - silent ignore (or show once)
+                                if current_time - self._startup_time < 0.1:  # Show message once at start
+                                    print(f"⏳ Keyboard handler warming up...")
+                            elif current_time < self._burst_protection_until:
+                                # During burst protection after quiet period
+                                if self._burst_protection_until - current_time > 0.8:  # Just activated
+                                    print(f"🛡️ IDE reconnection detected - ignoring input burst")
                             else:
                                 print(f"🛡️ Ignored automated pattern containing: {repr(char)}")
                         else:
