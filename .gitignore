@@ -137,8 +137,9 @@ lightning_logs/
 tb_logs/
 tensorboard_logs/
 
-# Weights & Biases
-wandb/
+# Weights & Biases (only ignore the local wandb run directory, not code)
+/wandb/
+**/wandb_logs/
 
 # MLflow
 mlruns/
