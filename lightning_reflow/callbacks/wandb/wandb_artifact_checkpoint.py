@@ -275,12 +275,22 @@ class WandbArtifactCheckpoint(pl.Callback):
         if not self._should_upload_periodic_validation(trainer):
             return
         
+        # Skip uploads if we're pausing - best/latest should only upload at actual training end
+        if self._is_pause_context(trainer):
+            self._log_verbose(trainer, "Skipping periodic upload during pause - will upload pause checkpoint instead")
+            return
+        
         self._upload_periodic_checkpoints(trainer, pl_module, UploadReason.PERIODIC_VALIDATION)
     
     @rank_zero_only
     def on_train_epoch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
         """Handle periodic uploads on epoch end."""
         if not self._should_upload_periodic_epoch(trainer):
+            return
+        
+        # Skip uploads if we're pausing - best/latest should only upload at actual training end
+        if self._is_pause_context(trainer):
+            self._log_verbose(trainer, "Skipping periodic upload during pause - will upload pause checkpoint instead")
             return
         
         self._upload_periodic_checkpoints(trainer, pl_module, UploadReason.PERIODIC_EPOCH)
@@ -511,30 +521,14 @@ class WandbArtifactCheckpoint(pl.Callback):
         """Determine which checkpoints to upload for periodic uploads."""
         checkpoints = []
         
-        if self.config.upload_best_last_only_at_end:
-            # Storage optimization mode
-            pattern = self.config.periodic_upload_pattern
-            
-            if pattern == "timestamped" and self._model_checkpoint_ref.last_model_path:
-                checkpoints.append((
-                    self._model_checkpoint_ref.last_model_path,
-                    f"periodic_{self.state.validation_count}"
-                ))
-            elif pattern == "best" and self._model_checkpoint_ref.best_model_path:
-                checkpoints.append((self._model_checkpoint_ref.best_model_path, "periodic_best"))
-            elif pattern == "last" and self._model_checkpoint_ref.last_model_path:
-                checkpoints.append((self._model_checkpoint_ref.last_model_path, "periodic_latest"))
-            elif pattern == "both":
-                if self._model_checkpoint_ref.best_model_path:
-                    checkpoints.append((self._model_checkpoint_ref.best_model_path, "periodic_best"))
-                if self._model_checkpoint_ref.last_model_path:
-                    checkpoints.append((self._model_checkpoint_ref.last_model_path, "periodic_latest"))
-        else:
-            # Standard mode - upload configured types
-            if self.config.upload_best_model and self._model_checkpoint_ref.best_model_path:
-                checkpoints.append((self._model_checkpoint_ref.best_model_path, "best"))
-            if self.config.upload_last_model and self._model_checkpoint_ref.last_model_path:
-                checkpoints.append((self._model_checkpoint_ref.last_model_path, "latest"))
+        # For periodic uploads, we should upload timestamped checkpoints
+        # Best/latest should only be uploaded at the actual end of training
+        if self._model_checkpoint_ref.last_model_path:
+            # Always use timestamped names for periodic uploads
+            checkpoints.append((
+                self._model_checkpoint_ref.last_model_path,
+                f"epoch_{self.state.epoch_count}_step_{self.state.validation_count}"
+            ))
         
         return checkpoints
     
