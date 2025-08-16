@@ -49,6 +49,7 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         pause_key: str = 'p',
         upload_key: str = 'w',
         debounce_interval: float = 0.3,
+        startup_grace_period: float = 2.0,  # New: grace period to ignore automated input
         refresh_rate: int = 1,
         bar_colour: str = "#fcac17",
         global_bar_metrics: list = None,
@@ -72,6 +73,7 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         self.pause_key = pause_key
         self.upload_key = upload_key
         self.debounce_interval = debounce_interval
+        self.startup_grace_period = startup_grace_period  # New: store grace period
         self.enable_pause_context_management = enable_pause_context_management
         self.show_pause_countdown = show_pause_countdown
         
@@ -119,7 +121,11 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         
         if self.enable_pause and trainer.is_global_zero:
             try:
-                self._keyboard_handler = ImprovedKeyboardHandler()
+                # Pass startup_grace_period to keyboard handler
+                self._keyboard_handler = ImprovedKeyboardHandler(
+                    debounce_interval=self.debounce_interval,
+                    startup_grace_period=self.startup_grace_period
+                )
                 # Start monitoring instead of registering keys
                 self._keyboard_handler.start_monitoring()
             except Exception as e:
