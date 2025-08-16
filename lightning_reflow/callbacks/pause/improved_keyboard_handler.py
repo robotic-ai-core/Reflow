@@ -16,7 +16,7 @@ except ImportError:
 
 
 class ImprovedKeyboardHandler:
-    """Simple keyboard handler with bulk input rejection only."""
+    """Keyboard handler with time-window detection for automated input."""
     
     def __init__(self, debounce_interval: float = 0.2, startup_grace_period: float = 2.0):
         self._monitoring = False
@@ -24,6 +24,7 @@ class ImprovedKeyboardHandler:
         self._key_queue: Queue = Queue()
         self._original_settings = None
         self._terminal_mode_set = False
+        self._char_window = 0.05  # 50ms window to check for following characters
     
     def is_available(self) -> bool:
         """Check if keyboard handling is available."""
@@ -75,27 +76,34 @@ class ImprovedKeyboardHandler:
     
     
     def _monitor_keyboard(self) -> None:
-        """Monitor keyboard input with simple bulk input rejection."""
+        """Monitor keyboard input with time-window detection for automated input."""
         while self._monitoring:
             try:
                 # Check for input with timeout
                 if select.select([sys.stdin], [], [], 0.1)[0]:
-                    # Read all available characters at once
-                    chars = []
-                    while select.select([sys.stdin], [], [], 0)[0]:
-                        char = sys.stdin.read(1)
-                        if char:
-                            chars.append(char)
-                        else:
-                            break
+                    # Read the first character
+                    first_char = sys.stdin.read(1)
                     
-                    if chars:
-                        # If multiple characters arrived at once, it's bulk/automated input
-                        if len(chars) > 1:
-                            print(f"🛡️ Ignored bulk input: {repr(''.join(chars))}")
+                    if first_char:
+                        # Wait briefly to see if more characters follow
+                        time.sleep(self._char_window)
+                        
+                        # Collect any additional characters that arrived during the window
+                        additional_chars = []
+                        while select.select([sys.stdin], [], [], 0)[0]:
+                            char = sys.stdin.read(1)
+                            if char:
+                                additional_chars.append(char)
+                            else:
+                                break
+                        
+                        # If more characters arrived, it's likely automated input
+                        if additional_chars:
+                            all_chars = first_char + ''.join(additional_chars)
+                            print(f"🛡️ Ignored automated input: {repr(all_chars)}")
                         else:
-                            # Single character - accept it immediately
-                            self._key_queue.put(chars[0])
+                            # Single character with no followers - accept it
+                            self._key_queue.put(first_char)
                 
                 # Small sleep to prevent CPU spinning
                 time.sleep(0.01)
