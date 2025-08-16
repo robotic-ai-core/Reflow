@@ -140,22 +140,29 @@ class ImprovedKeyboardHandler:
                 return True
         
         # Check 4: Pattern matching
-        if len(self._recent_chars) >= 3:
+        if len(self._recent_chars) >= 2:  # Need at least 2 chars to detect patterns
             # Build recent string from last few characters
             recent_string = ''.join(self._recent_chars)
             
             # Check if any ignore pattern is forming
             for pattern in self._ignore_patterns:
-                if pattern.startswith(recent_string.lower()) or recent_string.lower() in pattern:
-                    # Pattern detected or forming - extend burst protection
+                # Only block if the pattern STARTS with what we've typed
+                # This prevents false positives from single 'p' matching 'export', 'pyenv' etc
+                if pattern.startswith(recent_string.lower()):
+                    # Pattern is forming - extend burst protection
                     self._burst_protection_until = current_time + 0.5
                     return True
         
         # Check 5: Special case for 'p' after very rapid input
         if char == 'p' and len(self._char_timestamps) >= 2:
-            # If previous character was very recent (< 50ms), might be part of 'pyenv'
-            if current_time - self._char_timestamps[-2] < 0.05:
-                return True
+            # Only block if 'p' comes VERY rapidly after another char (< 20ms)
+            # AND if we've seen multiple rapid chars recently (likely automated)
+            if current_time - self._char_timestamps[-2] < 0.02:  # 20ms instead of 50ms
+                # Also check if we've had rapid input recently
+                if len(self._char_timestamps) >= 3:
+                    recent_span = self._char_timestamps[-1] - self._char_timestamps[-3]
+                    if recent_span < 0.1:  # 3 chars in 100ms
+                        return True
         
         return False
     
@@ -204,7 +211,9 @@ class ImprovedKeyboardHandler:
                                 if self._burst_protection_until - current_time > 0.8:  # Just activated
                                     print(f"🛡️ IDE reconnection detected - ignoring input burst")
                             else:
-                                print(f"🛡️ Ignored automated pattern containing: {repr(char)}")
+                                # More detailed logging to help debug false positives
+                                recent = ''.join(list(self._recent_chars)[-5:]) if self._recent_chars else ''
+                                print(f"🛡️ Blocked '{char}' (recent: '{recent}')")
                         else:
                             # Regular debouncing for manual input
                             current_time = time.time()
