@@ -177,6 +177,13 @@ class TestEnvironmentVariableResume:
     ])
     def test_critical_environment_variables(self, env_var, value):
         """Test that critical environment variables are properly handled."""
+        # Store original value
+        original_value = os.environ.get(env_var)
+        
+        # Make sure the variable is NOT set before we start
+        if env_var in os.environ:
+            del os.environ[env_var]
+        
         callback = EnvironmentCallback(env_vars={env_var: value})
         
         # Mock trainer and module
@@ -184,27 +191,18 @@ class TestEnvironmentVariableResume:
         trainer.global_rank = 0
         pl_module = Mock(spec=pl.LightningModule)
         
-        # Store original value
-        original_value = os.environ.get(env_var)
-        
         try:
-            # Set the variable (simulating CLI behavior)
-            os.environ[env_var] = value
-            
-            # Setup callback
+            # Setup callback - this should set the environment variable
             callback.setup(trainer, pl_module, "fit")
             
             # Verify variable is set
             assert os.environ.get(env_var) == value
             
-            # Teardown
+            # Teardown should restore original state
             callback.teardown(trainer, pl_module, "fit")
             
-            # Verify restoration
-            if original_value is not None:
-                assert os.environ.get(env_var) == original_value
-            else:
-                assert env_var not in os.environ
+            # Verify restoration - should be removed since it wasn't there originally
+            assert env_var not in os.environ
                 
         finally:
             # Ensure cleanup

@@ -57,17 +57,21 @@ class EnvironmentCallback(Callback):
         # Environment variables are set early by CLI before_instantiate_classes hook
         # This callback now serves as a config container and handles cleanup
         if self.env_vars:
-            logger.info(f"EnvironmentCallback: {len(self.env_vars)} environment variables were set by CLI hook")
+            logger.info(f"EnvironmentCallback: Managing {len(self.env_vars)} environment variables")
             
-            # Store original values for cleanup (the variables should already be set)
+            # Store original values for cleanup BEFORE setting new values
             for var_name in self.env_vars:
                 if var_name not in self.original_env:
                     self.original_env[var_name] = os.environ.get(var_name)
-                # Verify they are actually set
+            
+            # Set or verify the environment variables
+            for var_name, value in self.env_vars.items():
                 current_value = os.environ.get(var_name)
-                expected_value = str(self.env_vars[var_name])
+                expected_value = str(value)
                 if current_value != expected_value:
-                    logger.warning(f"  {var_name}: expected '{expected_value}', found '{current_value}'")
+                    # Set the variable if it's not already set correctly
+                    os.environ[var_name] = expected_value
+                    logger.info(f"  Set {var_name} = {expected_value}")
                 
         # Otherwise, try to extract from config files
         elif self.config_paths or self._should_extract_from_argv():
