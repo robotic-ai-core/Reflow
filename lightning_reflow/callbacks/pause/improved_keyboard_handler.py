@@ -24,7 +24,7 @@ class ImprovedKeyboardHandler:
         self._key_queue: Queue = Queue()
         self._original_settings = None
         self._terminal_mode_set = False
-        self._char_window = 0.05  # 50ms window to check for following characters
+        self._char_window = 0.25  # 250ms window to check for following characters
     
     def is_available(self) -> bool:
         """Check if keyboard handling is available."""

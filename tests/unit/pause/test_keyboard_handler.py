@@ -64,7 +64,7 @@ class TestImprovedKeyboardHandler:
         assert handler._monitoring is False
         assert handler._monitor_thread is None
         assert handler._key_queue is not None
-        assert handler._char_window == 0.05  # 50ms window
+        assert handler._char_window == 0.25  # 250ms window
     
     def test_single_character_accepted(self, mock_termios, mock_stdin):
         """Test that single characters with no followers are accepted."""
@@ -77,10 +77,10 @@ class TestImprovedKeyboardHandler:
                 mock_stdin.add_input('p')
                 
                 # First select returns True (input available)
-                # Second select (after 50ms wait) returns False (no more input)
+                # Second select (after 250ms wait) returns False (no more input)
                 mock_select.side_effect = [
                     ([mock_stdin], [], []),  # Initial check - input available
-                    ([], [], []),  # After 50ms - no more input
+                    ([], [], []),  # After 250ms - no more input
                 ]
                 
                 # Run one iteration of the monitor loop
@@ -103,11 +103,11 @@ class TestImprovedKeyboardHandler:
                 mock_stdin.add_input('pyenv')
                 
                 # First select returns True (first char available)
-                # Second select (after 50ms) returns True (more chars available)
+                # Second select (after 250ms) returns True (more chars available)
                 # Subsequent selects return True until queue is empty
                 mock_select.side_effect = [
                     ([mock_stdin], [], []),  # Initial - 'p' available
-                    ([mock_stdin], [], []),  # After 50ms - 'y' available
+                    ([mock_stdin], [], []),  # After 250ms - 'y' available
                     ([mock_stdin], [], []),  # 'e' available
                     ([mock_stdin], [], []),  # 'n' available
                     ([mock_stdin], [], []),  # 'v' available
@@ -131,11 +131,11 @@ class TestImprovedKeyboardHandler:
                 assert key is None
     
     def test_time_window_detection(self, mock_termios):
-        """Test that the 50ms time window correctly distinguishes input types."""
+        """Test that the 250ms time window correctly distinguishes input types."""
         handler = ImprovedKeyboardHandler()
         
         # Test that char_window is set correctly
-        assert handler._char_window == 0.05
+        assert handler._char_window == 0.25
         
         # Test with custom window
         handler2 = ImprovedKeyboardHandler()
