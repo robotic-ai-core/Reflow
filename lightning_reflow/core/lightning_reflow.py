@@ -384,21 +384,22 @@ class LightningReflow:
             else:
                 logger.info("📄 No embedded config found in checkpoint, resuming without it.")
             
-            # Add any user-provided override configs
-            if config_overrides:
-                for config_file in config_overrides:
-                    cmd.extend(['--config', str(config_file)])
-                logger.info(f"🔧 Applying override configs: {config_overrides}")
-            
-            # Add checkpoint path LAST so it overrides any ckpt_path in configs
-            cmd.extend(['--ckpt_path', str(checkpoint_path)])
-            
             # Configure W&B logger for run resumption if we have a run ID
+            # NOTE: This must come BEFORE user overrides so user configs can override W&B settings
             if wandb_run_id:
                 temp_wandb_config_path = self._add_wandb_resume_config(cmd, wandb_run_id, embedded_config_yaml)
             else:
                 logger.info("ℹ️ No W&B run ID specified - will create new W&B run if logger is configured")
                 temp_wandb_config_path = None
+            
+            # Add any user-provided override configs AFTER W&B config so they have higher precedence
+            if config_overrides:
+                for config_file in config_overrides:
+                    cmd.extend(['--config', str(config_file)])
+                logger.info(f"🔧 Applying override configs with highest precedence: {config_overrides}")
+            
+            # Add checkpoint path LAST so it overrides any ckpt_path in configs
+            cmd.extend(['--ckpt_path', str(checkpoint_path)])
             
             # Pass through any additional Lightning CLI arguments
             if extra_cli_args:
