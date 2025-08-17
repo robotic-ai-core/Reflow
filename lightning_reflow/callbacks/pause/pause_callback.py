@@ -401,14 +401,15 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
             if should_upload:
                 artifact_path = self._handle_upload_with_fallback(trainer, pl_module, str(checkpoint_path))
             
-            # Step 4: Print resume commands (informational - should not fail pause)
-            self._print_resume_commands_with_fallback(trainer, str(checkpoint_path), artifact_path)
-            
-            # Step 5: Set trainer stop and reset state
+            # Step 4: Set trainer stop and reset state
             trainer.should_stop = True
             self._state_machine.reset()
             
             print(f"🔄 Training paused successfully at validation boundary")
+            
+            # Step 5: Print resume commands AFTER setting should_stop
+            # This allows any pending checkpoint operations to complete first
+            self._print_resume_commands_with_fallback(trainer, str(checkpoint_path), artifact_path)
             
         except Exception as e:
             # Critical failure handling
