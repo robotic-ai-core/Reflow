@@ -93,6 +93,9 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         # Store original command line arguments for resume commands
         import sys
         self._original_argv = sys.argv.copy()
+        
+        # Track last checkpoint path for HPO integration
+        self.last_checkpoint_path = None
 
     @property
     def _pause_state(self) -> PauseState:
@@ -112,6 +115,10 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
     def is_upload_all_requested(self) -> bool:
         """Check if upload all checkpoints is requested during pause."""
         return self._state_machine.is_upload_all_requested()
+    
+    def get_last_checkpoint(self) -> Optional[Path]:
+        """Get the last saved checkpoint path (for HPO integration)."""
+        return self.last_checkpoint_path
 
     def on_train_start(self, trainer: Trainer, pl_module: LightningModule):
         super().on_train_start(trainer, pl_module)
@@ -344,6 +351,9 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
     def _save_checkpoint(self, trainer: Trainer, pl_module: LightningModule, checkpoint_path: Path):
         # Save checkpoint normally
         trainer.save_checkpoint(checkpoint_path)
+        
+        # Track the checkpoint path for HPO integration
+        self.last_checkpoint_path = checkpoint_path
         
         # Add config metadata if the mixin is available
         # try:
