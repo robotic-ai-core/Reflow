@@ -36,21 +36,28 @@ DEFAULT_STEP_LOGGER_CONFIG = {
 }
 
 
-def get_trainer_defaults(user_defaults: Dict[str, Any] = None) -> Dict[str, Any]:
+def get_trainer_defaults(user_defaults: Dict[str, Any] = None, disable_pause_callback: bool = False) -> Dict[str, Any]:
     """
     Get trainer configuration with shared defaults.
     
     Args:
         user_defaults: User-provided trainer defaults that can override shared defaults
+        disable_pause_callback: If True, allow Lightning's default progress bar
         
     Returns:
         Merged trainer configuration with shared defaults + user overrides
     """
     trainer_config = SHARED_TRAINER_DEFAULTS.copy()
     
+    # If pause callback is disabled, we can use Lightning's default progress bar
+    if disable_pause_callback:
+        # Allow Lightning's default progress bar when PauseCallback is disabled
+        trainer_config['enable_progress_bar'] = True
+        logger.info("📊 PauseCallback disabled - using Lightning's default progress bar")
+    
     if user_defaults:
-        # Check for progress bar override that could cause conflicts
-        if 'enable_progress_bar' in user_defaults and user_defaults['enable_progress_bar'] is True:
+        # Check for progress bar override that could cause conflicts (only if PauseCallback is enabled)
+        if not disable_pause_callback and 'enable_progress_bar' in user_defaults and user_defaults['enable_progress_bar'] is True:
             logger.warning("⚠️ User is trying to enable Lightning's default progress bar!")
             logger.warning("⚠️ This will conflict with Reflow's custom progress bar (PauseCallback).")
             logger.warning("⚠️ Keeping enable_progress_bar=False to prevent UI conflicts.")
@@ -66,21 +73,23 @@ def get_trainer_defaults(user_defaults: Dict[str, Any] = None) -> Dict[str, Any]
     return trainer_config
 
 
-def ensure_essential_callbacks(callbacks: List[Callback], trainer=None) -> List[Callback]:
+def ensure_essential_callbacks(callbacks: List[Callback], trainer=None, disable_pause_callback: bool = False) -> List[Callback]:
     """
     Ensure essential Lightning Reflow callbacks are present.
     
     Args:
         callbacks: Existing list of callbacks
         trainer: Trainer instance (optional, for CLI compatibility)
+        disable_pause_callback: If True, skip adding PauseCallback
         
     Returns:
         List of callbacks with essential callbacks ensured
     """
     callbacks = list(callbacks) if callbacks else []
     
-    # Ensure PauseCallback
-    _ensure_pause_callback(callbacks)
+    # Ensure PauseCallback (unless disabled)
+    if not disable_pause_callback:
+        _ensure_pause_callback(callbacks)
     
     # Ensure StepOutputLoggerCallback  
     _ensure_step_output_logger(callbacks)

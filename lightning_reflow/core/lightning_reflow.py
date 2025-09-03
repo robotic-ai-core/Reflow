@@ -67,6 +67,7 @@ class LightningReflow:
         seed_everything: Optional[int] = None,
         resume_strategies: Optional[List[ResumeStrategy]] = None,
         auto_configure_logging: bool = True,
+        disable_pause_callback: bool = False,
         **kwargs
     ):
         """
@@ -84,6 +85,7 @@ class LightningReflow:
             seed_everything: Random seed for reproducibility
             resume_strategies: Custom resume strategies (uses defaults if None)
             auto_configure_logging: Whether to automatically configure logging
+            disable_pause_callback: If True, disables PauseCallback and uses Lightning's default progress bar
             **kwargs: Additional arguments
         """
         # Configure logging early
@@ -100,6 +102,7 @@ class LightningReflow:
         self.trainer_defaults = trainer_defaults or {}
         self.additional_callbacks = callbacks or []
         self.seed_everything = seed_everything
+        self.disable_pause_callback = disable_pause_callback
         
         # Initialize configuration loader
         self.config_loader = ConfigLoader()
@@ -694,7 +697,7 @@ class LightningReflow:
         from .shared_config import get_trainer_defaults
         
         # Start with shared defaults + user defaults
-        trainer_config = get_trainer_defaults(self.trainer_defaults)
+        trainer_config = get_trainer_defaults(self.trainer_defaults, disable_pause_callback=self.disable_pause_callback)
         logger.info(f"🔧 Initial trainer config (shared + user defaults): enable_progress_bar={trainer_config.get('enable_progress_bar')}")
         
         # Merge with config file trainer settings
@@ -791,7 +794,10 @@ class LightningReflow:
         all_callbacks.extend(self.additional_callbacks)
         
         # Ensure essential callbacks are present using shared logic
-        all_callbacks = ensure_essential_callbacks(all_callbacks)
+        all_callbacks = ensure_essential_callbacks(
+            all_callbacks, 
+            disable_pause_callback=self.disable_pause_callback
+        )
         
         return all_callbacks
     
