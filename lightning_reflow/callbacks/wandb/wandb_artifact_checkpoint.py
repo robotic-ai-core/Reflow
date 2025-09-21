@@ -26,6 +26,7 @@ from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
 from ...utils.logging.logging_config import get_logger
 from ...utils.wandb.wandb_artifact_manager import WandbArtifactManager
+from ...utils.checkpoint.wandb_artifact_state import WandbArtifactState
 
 
 class UploadReason(Enum):
@@ -116,124 +117,6 @@ class WandbArtifactCheckpoint(pl.Callback):
         # Register for state persistence
         self._register_for_state_persistence()
     
-    # ============= Backward Compatibility Properties =============
-    # These properties provide compatibility with the old attribute-based interface
-    
-    @property
-    def upload_best_model(self) -> bool:
-        return self.config.upload_best_model
-    
-    @property
-    def upload_last_model(self) -> bool:
-        return self.config.upload_last_model
-    
-    @property
-    def upload_all_checkpoints(self) -> bool:
-        return self.config.upload_all_checkpoints
-    
-    @property
-    def upload_every_n_epoch(self) -> Optional[int]:
-        return self.config.upload_every_n_epoch
-    
-    @property
-    def upload_every_n_validation(self) -> Optional[int]:
-        return self.config.upload_every_n_validation
-    
-    @property
-    def min_training_minutes(self) -> float:
-        return self.config.min_training_minutes
-    
-    @property
-    def use_compression(self) -> bool:
-        return self.config.use_compression
-    
-    @property
-    def upload_best_last_only_at_end(self) -> bool:
-        return self.config.upload_best_last_only_at_end
-    
-    @property
-    def periodic_upload_pattern(self) -> str:
-        return self.config.periodic_upload_pattern
-    
-    @property
-    def monitor_pause_checkpoints(self) -> bool:
-        return self.config.monitor_pause_checkpoints
-    
-    @property
-    def create_emergency_checkpoints(self) -> bool:
-        return self.config.create_emergency_checkpoints
-    
-    @property
-    def wandb_verbose(self) -> bool:
-        return self.config.wandb_verbose
-    
-    @property
-    def _training_start_time(self) -> Optional[float]:
-        """Backward compatibility for old attribute name."""
-        return self.state.training_start_time
-    
-    @_training_start_time.setter
-    def _training_start_time(self, value: Optional[float]) -> None:
-        """Backward compatibility setter."""
-        self.state.training_start_time = value
-    
-    @property
-    def _validation_count(self) -> int:
-        """Backward compatibility for old attribute name."""
-        return self.state.validation_count
-    
-    @_validation_count.setter
-    def _validation_count(self, value: int) -> None:
-        """Backward compatibility setter."""
-        self.state.validation_count = value
-    
-    @property
-    def _epoch_count(self) -> int:
-        """Backward compatibility for old attribute name."""
-        return self.state.epoch_count
-    
-    @_epoch_count.setter
-    def _epoch_count(self, value: int) -> None:
-        """Backward compatibility setter."""
-        self.state.epoch_count = value
-    
-    # Backward compatibility methods
-    def _should_upload_epoch(self, trainer: "pl.Trainer") -> bool:
-        """Backward compatibility wrapper."""
-        return self._should_upload_periodic_epoch(trainer)
-    
-    def _should_upload_validation(self, trainer: "pl.Trainer") -> bool:
-        """Backward compatibility wrapper."""
-        return self._should_upload_periodic_validation(trainer)
-    
-    def _save_comprehensive_checkpoint(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule",
-                                      filepath: str, reason: str) -> bool:
-        """Backward compatibility wrapper for emergency checkpoint creation."""
-        try:
-            from ...utils.checkpoint.checkpoint_utils import save_comprehensive_checkpoint
-            save_comprehensive_checkpoint(
-                trainer, pl_module,
-                filepath,
-                reason=reason,
-                extra_metadata={'wandb_run_id': self._wandb_run_ref.id if self._wandb_run_ref else None}
-            )
-            return Path(filepath).exists() and Path(filepath).stat().st_size > 0
-        except Exception as e:
-            self.logger.error(f"Failed to save checkpoint: {e}")
-            return False
-    
-    def _upload_single_checkpoint(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule",
-                                 filepath: str, ckpt_type: str, score: Optional[float] = None,
-                                 reason: str = "manual") -> Optional[str]:
-        """Backward compatibility wrapper for single checkpoint upload."""
-        upload_reason = UploadReason.NORMAL_COMPLETION
-        if reason == "exception":
-            upload_reason = UploadReason.EXCEPTION
-        elif reason == "teardown":
-            upload_reason = UploadReason.TEARDOWN
-        
-        result = self._upload_checkpoint(trainer, pl_module, filepath, ckpt_type, score, upload_reason)
-        return result['artifact'] if result else None
     
     # ============= Core Lightning Hooks =============
     
@@ -653,72 +536,6 @@ class WandbArtifactCheckpoint(pl.Callback):
     
     # ============= State Persistence =============
     
-    @rank_zero_only
-    def on_save_checkpoint(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", 
-                          checkpoint: Dict[str, Any]) -> None:
-        """Save callback state to checkpoint."""
-        # Save in new format
-        checkpoint['wandb_artifact_checkpoint_state'] = {
-            'config': self.config.__dict__,
-            'state': self.state.__dict__,
-            'version': '2.0'
-        }
-        
-        # Also save in old format for backward compatibility
-        checkpoint['wandb_artifact_checkpoint'] = {
-            'epoch_count': self.state.epoch_count,
-            'validation_count': self.state.validation_count,
-            'has_uploaded': self.state.has_uploaded,
-            'uploaded_pause_checkpoints': self.state.uploaded_pause_checkpoints,
-            'last_uploaded_epoch': self.state.last_uploaded_epoch,
-            'last_uploaded_validation_step': self.state.last_uploaded_validation_step,
-            'checkpoint_was_loaded': self.state.checkpoint_was_loaded,
-            'next_checkpoint_epoch': self.state.next_checkpoint_epoch,
-            'next_checkpoint_step': self.state.next_checkpoint_step
-        }
-    
-    @rank_zero_only
-    def on_load_checkpoint(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule",
-                          checkpoint: Dict[str, Any]) -> None:
-        """Restore callback state from checkpoint."""
-        # Try new format first
-        if 'wandb_artifact_checkpoint_state' in checkpoint:
-            saved_state = checkpoint['wandb_artifact_checkpoint_state']
-            
-            # Restore state
-            if 'state' in saved_state:
-                for key, value in saved_state['state'].items():
-                    if hasattr(self.state, key):
-                        setattr(self.state, key, value)
-            
-            self.logger.info(f"Restored WandbArtifactCheckpoint state from checkpoint (v2.0)")
-        # Fall back to old format for backward compatibility
-        elif 'wandb_artifact_checkpoint' in checkpoint:
-            old_state = checkpoint['wandb_artifact_checkpoint']
-            
-            # Map old state keys to new state object
-            if 'epoch_count' in old_state:
-                self.state.epoch_count = old_state['epoch_count']
-            if 'validation_count' in old_state:
-                self.state.validation_count = old_state['validation_count']
-            if 'has_uploaded' in old_state:
-                self.state.has_uploaded = old_state['has_uploaded']
-            if 'uploaded_pause_checkpoints' in old_state:
-                self.state.uploaded_pause_checkpoints = old_state['uploaded_pause_checkpoints']
-            if 'last_uploaded_epoch' in old_state:
-                self.state.last_uploaded_epoch = old_state['last_uploaded_epoch']
-            if 'last_uploaded_validation_step' in old_state:
-                self.state.last_uploaded_validation_step = old_state['last_uploaded_validation_step']
-            if 'checkpoint_was_loaded' in old_state:
-                self.state.checkpoint_was_loaded = old_state['checkpoint_was_loaded']
-            if 'next_checkpoint_epoch' in old_state:
-                self.state.next_checkpoint_epoch = old_state['next_checkpoint_epoch']
-            if 'next_checkpoint_step' in old_state:
-                self.state.next_checkpoint_step = old_state['next_checkpoint_step']
-            
-            self.logger.info(f"Restored WandbArtifactCheckpoint state from checkpoint (legacy format)")
-        
-        # Note: We don't restore config as it should come from current run
     
     # ============= Helper Methods =============
     
@@ -888,35 +705,12 @@ class WandbArtifactCheckpoint(pl.Callback):
     def _register_for_state_persistence(self) -> None:
         """Register for checkpoint state persistence."""
         try:
-            from ...utils.checkpoint.manager_state import register_manager, ManagerState
-            
-            class WandbArtifactState(ManagerState):
-                def __init__(self, callback):
-                    self.callback = callback
-                
-                @property
-                def manager_name(self) -> str:
-                    return "wandb_artifact_checkpoint"
-                
-                def capture_state(self) -> Dict[str, Any]:
-                    return {
-                        'config': self.callback.config.__dict__,
-                        'state': self.callback.state.__dict__,
-                        'version': '2.0'
-                    }
-                
-                def restore_state(self, state: Dict[str, Any]) -> bool:
-                    if 'state' in state:
-                        for key, value in state['state'].items():
-                            if hasattr(self.callback.state, key):
-                                setattr(self.callback.state, key, value)
-                    return True
-                
-                def validate_state(self, state: Dict[str, Any]) -> bool:
-                    return isinstance(state, dict) and 'version' in state
-            
-            register_manager(WandbArtifactState(self))
+            from ...utils.checkpoint.manager_state import register_manager
+
+            # Use the extracted WandbArtifactState class
+            self._state_manager = WandbArtifactState(self)
+            register_manager(self._state_manager)
             self.logger.info("🔗 WandbArtifactCheckpoint registered for checkpoint persistence")
-            
+
         except ImportError:
             self.logger.debug("Manager state system not available")

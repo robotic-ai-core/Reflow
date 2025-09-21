@@ -58,6 +58,7 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         enable_pause_context_management: bool = True,
         skip_dependency_check: bool = False,  # Added for test compatibility
         show_pause_countdown: bool = False,  # Disable pause countdown by default to save screen space
+        save_rng_states: bool = True,  # Enable scientific reproducibility by default
     ):
         super().__init__(
             refresh_rate=refresh_rate,
@@ -96,6 +97,15 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         
         # Track last checkpoint path for HPO integration
         self.last_checkpoint_path = None
+
+        # Register scientific reproducibility manager if enabled
+        self.save_rng_states = save_rng_states
+        if self.save_rng_states:
+            from ...utils.checkpoint.scientific_reproducibility_state import ScientificReproducibilityState
+            from ...utils.checkpoint.manager_state import register_manager
+            self._reproducibility_manager = ScientificReproducibilityState()
+            register_manager(self._reproducibility_manager)
+            print("🔬 Scientific reproducibility enabled (RNG states will be saved)")
 
     @property
     def _pause_state(self) -> PauseState:
@@ -738,6 +748,20 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         """Get pause status suffix for global progress bar."""
         return ""  # Keep global bar clean
     
+    def on_fit_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        """Set model reference for the reproducibility manager."""
+        super().on_fit_start(trainer, pl_module)
+        if self.save_rng_states and hasattr(self, '_reproducibility_manager'):
+            self._reproducibility_manager.set_references(model=pl_module, trainer=trainer)
+
+    def on_load_checkpoint(self, trainer: Trainer, pl_module: LightningModule, checkpoint: Dict[str, Any]) -> None:
+        """Trigger post-restoration hooks for scientific reproducibility."""
+        super().on_load_checkpoint(trainer, pl_module, checkpoint)
+        if self.save_rng_states and hasattr(self, '_reproducibility_manager'):
+            # Update references and trigger post-restoration
+            self._reproducibility_manager.set_references(model=pl_module, trainer=trainer)
+            self._reproducibility_manager.post_restoration_hook()
+
     def on_save_checkpoint(self, trainer: Trainer, pl_module: LightningModule, checkpoint: Dict[str, Any]) -> None:
         """Save pause callback metadata to checkpoint."""
         # Call parent to handle any base class logic
@@ -753,7 +777,7 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
             if 'pause_callback_metadata' not in checkpoint:
                 checkpoint['pause_callback_metadata'] = {}
             checkpoint['pause_callback_metadata']['manager_states'] = manager_states
-            print(f"📦 Captured {manager_states.get('manager_count', 0)} manager states")
+            print(f"📦 Captured {len(manager_states)} manager states")
         except Exception as e:
             print(f"⚠️ Failed to capture manager states: {e}")
         

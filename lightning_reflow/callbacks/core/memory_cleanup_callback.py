@@ -14,10 +14,10 @@ import gc
 from typing import List, Optional
 
 import torch
-from lightning.pytorch.callbacks import Callback
+from .base_reflow_callback import BaseReflowCallback
 
 
-class MemoryCleanupCallback(Callback):
+class MemoryCleanupCallback(BaseReflowCallback):
     """
     Callback that performs memory cleanup at configurable Lightning hook points.
     
@@ -50,7 +50,7 @@ class MemoryCleanupCallback(Callback):
         aggressive_cleanup: bool = True,
         verbose: bool = False
     ):
-        super().__init__()
+        super().__init__(enable_state_management=False, verbose=verbose)
         
         if cleanup_points is None:
             cleanup_points = ["on_validation_epoch_end"]  # Default to validation cleanup

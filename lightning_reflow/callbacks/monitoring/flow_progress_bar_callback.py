@@ -6,6 +6,7 @@ import logging
 from typing import Any, Dict, List, Optional, Set
 from tqdm import tqdm
 from lightning.pytorch.callbacks import LearningRateMonitor
+from lightning_reflow.utils.checkpoint.flow_progress_bar_state import FlowProgressBarState
 
 logger = logging.getLogger(__name__)
 
@@ -990,83 +991,13 @@ class FlowProgressBarCallback(LearningRateMonitor):
     def _register_for_state_persistence(self) -> None:
         """Register this callback for manager state persistence."""
         try:
-            from lightning_reflow.utils.checkpoint.manager_state import register_manager, ManagerState
-            import time
-            from typing import Dict, Any
-            
-            class FlowProgressBarState(ManagerState):
-                """Manager state for FlowProgressBarCallback."""
-                
-                def __init__(self, callback: 'FlowProgressBarCallback'):
-                    self.callback = callback
-                
-                @property
-                def manager_name(self) -> str:
-                    return "flow_progress_bar"
-                
-                def capture_state(self) -> Dict[str, Any]:
-                    """Capture FlowProgressBarCallback state for persistence."""
-                    return {
-                        'version': '1.0.0',
-                        'validation_count': self.callback._validation_count,
-                        'last_validation_batch': self.callback._last_validation_batch,
-                        'configuration': {
-                            'refresh_rate': self.callback._refresh_rate,
-                            'global_bar_metrics': self.callback.global_bar_metrics,
-                            'interval_bar_metrics': self.callback.interval_bar_metrics,
-                            'bar_colour': self.callback._bar_colour
-                        },
-                        'timestamp': time.time()
-                    }
-                
-                def restore_state(self, state: Dict[str, Any]) -> bool:
-                    """Restore FlowProgressBarCallback state from persistence."""
-                    try:
-                        if not self.validate_state(state):
-                            return False
-                        
-                        # Restore critical tracking state
-                        self.callback._validation_count = state.get('validation_count', 0)
-                        self.callback._last_validation_batch = state.get('last_validation_batch', state.get('last_validation_step', 0))
-                        
-                        # Clear metric caches so they get rebuilt with correct state
-                        self.callback._global_metric_keys_cache = None
-                        self.callback._interval_metric_keys_cache = None
-                        self.callback._available_metric_keys_cache = None
-                        
-                        return True
-                        
-                    except Exception as e:
-                        print(f"Failed to restore FlowProgressBarCallback state: {e}")
-                        return False
-                
-                def validate_state(self, state: Dict[str, Any]) -> bool:
-                    """Validate that the state is compatible."""
-                    if not isinstance(state, dict):
-                        return False
-                    
-                    version = state.get('version')
-                    if version != '1.0.0':
-                        print(f"FlowProgressBarCallback: Incompatible state version {version}, expected 1.0.0")
-                        return False
-                    
-                    # Validate required fields (with backward compatibility)
-                    if 'validation_count' not in state:
-                        print(f"FlowProgressBarCallback: Missing required field in state: validation_count")
-                        return False
-                        
-                    # Check for either new or old field name (backward compatibility)
-                    if 'last_validation_batch' not in state and 'last_validation_step' not in state:
-                        print(f"FlowProgressBarCallback: Missing required field in state: last_validation_batch (or legacy last_validation_step)")
-                        return False
-                    
-                    return True
-            
-            # Register the state manager
+            from lightning_reflow.utils.checkpoint.manager_state import register_manager
+
+            # Use the extracted FlowProgressBarState class
             state_manager = FlowProgressBarState(self)
             register_manager(state_manager)
             # Note: Don't print here as this gets called during __init__
-            
+
         except ImportError:
             # Manager state system not available - continue with Lightning's built-in state persistence
             pass
