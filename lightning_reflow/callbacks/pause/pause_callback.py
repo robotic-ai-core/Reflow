@@ -706,7 +706,21 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
             print(f"☁️  W&B resume:     {script_command} resume --checkpoint-artifact {artifact_path}")
         
         # Also show the legacy method for backward compatibility
-        legacy_command = f"python {' '.join(self._original_argv)}" if not self._original_argv[0].startswith("python") else ' '.join(self._original_argv)
+        # Filter out any existing --ckpt_path arguments to avoid duplicates/conflicts
+        filtered_argv = []
+        i = 0
+        while i < len(self._original_argv):
+            if self._original_argv[i] == '--ckpt_path':
+                # Skip both the flag and its value
+                i += 2
+            elif self._original_argv[i].startswith('--ckpt_path='):
+                # Skip combined flag=value format
+                i += 1
+            else:
+                filtered_argv.append(self._original_argv[i])
+                i += 1
+
+        legacy_command = f"python {' '.join(filtered_argv)}" if not filtered_argv[0].startswith("python") else ' '.join(filtered_argv)
         print(f"📁 Legacy method:   {legacy_command} --ckpt_path {checkpoint_path}")
         if artifact_path:
             # For legacy method, we can use --resume_from_wandb flag
@@ -757,6 +771,12 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
     def on_load_checkpoint(self, trainer: Trainer, pl_module: LightningModule, checkpoint: Dict[str, Any]) -> None:
         """Trigger post-restoration hooks for scientific reproducibility."""
         super().on_load_checkpoint(trainer, pl_module, checkpoint)
+
+        # Update _original_argv to reflect current command line when resuming
+        # This ensures the legacy resume command shows the correct checkpoint path
+        import sys
+        self._original_argv = sys.argv.copy()
+
         if self.save_rng_states and hasattr(self, '_reproducibility_manager'):
             # Update references and trigger post-restoration
             self._reproducibility_manager.set_references(model=pl_module, trainer=trainer)
