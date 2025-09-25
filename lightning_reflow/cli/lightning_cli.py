@@ -69,6 +69,8 @@ class LightningReflowCLI(LightningCLI):
     def before_fit(self) -> None:
         """Hook called before fit starts - add essential callbacks."""
         self._add_essential_callbacks()
+        # Proactively create checkpoint directories to avoid FileNotFoundError
+        self._ensure_checkpoint_directories()
     
     def _add_essential_callbacks(self) -> None:
         """Add essential callbacks if not already present using shared logic."""
@@ -113,6 +115,39 @@ class LightningReflowCLI(LightningCLI):
         self._register_trainer_config_state(trainer)
         
         return trainer
+
+    def _ensure_checkpoint_directories(self) -> None:
+        """Ensure checkpoint directories exist for ModelCheckpoint and default root.
+
+        Lightning's atomic save via fsspec may not auto-create parent directories.
+        This method creates them ahead of time to prevent save errors like
+        FileNotFoundError for 'checkpoints/last.ckpt'.
+        """
+        try:
+            if not hasattr(self, 'trainer') or not self.trainer:
+                return
+
+            # Ensure trainer.default_root_dir exists
+            try:
+                default_root = getattr(self.trainer, 'default_root_dir', None)
+                if default_root:
+                    Path(default_root).mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                logger.debug(f"Could not create default_root_dir '{default_root}': {e}")
+
+            # Ensure each ModelCheckpoint.dirpath exists
+            try:
+                from lightning.pytorch.callbacks import ModelCheckpoint
+                for cb in (self.trainer.callbacks or []):
+                    if isinstance(cb, ModelCheckpoint):
+                        dirpath = getattr(cb, 'dirpath', None)
+                        if dirpath:
+                            Path(dirpath).mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                logger.debug(f"Could not ensure ModelCheckpoint directories: {e}")
+
+        except Exception as e:
+            logger.warning(f"Failed to ensure checkpoint directories: {e}")
     
     def _process_environment_callback_config(self) -> None:
         """
