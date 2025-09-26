@@ -687,13 +687,19 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         
         # Extract script name and ensure "python" is included for copy-paste convenience
         script_name = self._original_argv[0] if self._original_argv else "train_lightning.py"
-        
+
         # Detect if running via module and provide user-friendly command
-        if ("__main__.py" in script_name or 
+        if ("__main__.py" in script_name or
             script_name.endswith("/lightning_reflow/cli/__main__.py") or
             "lightning_reflow" in script_name and "__main__" in script_name):
             # Running via python -m lightning_reflow.cli - suggest user-friendly command
-            script_command = "python train_lightning.py"
+            # Use the actual script that invoked the CLI rather than hardcoding train_lightning.py
+            import sys
+            if len(sys.argv) > 0 and sys.argv[0].endswith('.py'):
+                script_command = f"python {sys.argv[0]}"
+            else:
+                # Fallback to a generic command if we can't determine the actual script
+                script_command = "python train_lightning.py"
         elif not script_name.startswith("python"):
             script_command = f"python {script_name}"
         else:
