@@ -48,6 +48,11 @@ class LightningReflowCLI(LightningCLI):
         """
         logger.info("🎯 Initializing Lightning Reflow CLI")
 
+        # CRITICAL: Register numpy safe globals BEFORE any checkpoint loading
+        # Lightning CLI's _parse_ckpt_path() loads checkpoints with weights_only=True
+        # This must happen before super().__init__() to allow numpy objects in checkpoints
+        self._register_numpy_safe_globals()
+
         # Handle resume command by spawning subprocess with fit command
         if self._is_resume_command():
             self._execute_resume_as_subprocess()
@@ -236,6 +241,38 @@ class LightningReflowCLI(LightningCLI):
         except Exception as e:
             logger.warning(f"⚠️ Failed to register state managers: {e}")
     
+    def _register_numpy_safe_globals(self) -> None:
+        """
+        Register numpy safe globals for torch.load with weights_only=True.
+
+        MUST be called BEFORE super().__init__() because Lightning CLI's _parse_ckpt_path()
+        loads checkpoints with weights_only=True, which will fail if numpy objects are present.
+
+        This is safe for our own checkpoints that may contain numpy arrays/dtypes.
+        """
+        try:
+            import numpy as np
+            import torch
+
+            # Collect all numpy dtype classes for safe loading
+            numpy_dtypes = []
+            if hasattr(np, 'dtypes'):
+                numpy_dtypes = [getattr(np.dtypes, attr) for attr in dir(np.dtypes) if 'DType' in attr]
+
+            # Register safe globals for numpy objects
+            safe_globals = [
+                np._core.multiarray._reconstruct,
+                np.ndarray,
+                np.dtype,
+            ] + numpy_dtypes
+
+            torch.serialization.add_safe_globals(safe_globals)
+            logger.debug(f"✅ Registered {len(safe_globals)} numpy safe globals for checkpoint loading")
+
+        except Exception as e:
+            # Don't fail initialization if this doesn't work
+            logger.warning(f"⚠️  Could not register numpy safe globals: {e}")
+
     def _is_resume_command(self) -> bool:
         """Check if the command is a resume command."""
         return len(sys.argv) > 1 and sys.argv[1] == RESUME_COMMAND
