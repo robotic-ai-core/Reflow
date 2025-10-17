@@ -173,7 +173,7 @@ class TestCLIConfigIntegration:
 
 class TestCLITrainingIntegration:
     """Test CLI integration with actual training using minimal pipeline."""
-    
+
     def test_minimal_training_flow(self, temp_dir, sample_config):
         """Test minimal training flow with SimpleReflowModel."""
         # Create a minimal config for fast testing
@@ -204,24 +204,100 @@ class TestCLITrainingIntegration:
                 'logger': False
             }
         }
-        
+
         config_path = temp_dir / "minimal_config.yaml"
         with open(config_path, 'w') as f:
             yaml.dump(minimal_config, f)
-        
+
         # Mock CLI initialization to avoid full training
         with patch('lightning_reflow.cli.lightning_cli.LightningReflowCLI.__init__', return_value=None):
             with patch('lightning.pytorch.Trainer.fit') as mock_fit:
                 cli = LightningReflowCLI.__new__(LightningReflowCLI)
                 cli.config = minimal_config
                 cli.subcommand = 'fit'
-                
+
                 # Simulate fit call
                 mock_fit.return_value = None
-                
+
                 # Verify configuration is valid
                 assert cli.config['model']['class_path'] == 'lightning_reflow.models.SimpleReflowModel'
                 assert cli.config['trainer']['max_steps'] == 2
+
+
+class TestCLIStaleConfigHandling:
+    """Test CLI handling of stale config files."""
+
+    def test_fresh_training_with_stale_config_yaml(self, temp_dir):
+        """Test that fresh training gracefully handles stale config.yaml from previous runs."""
+        # Create a minimal config
+        config_content = {
+            'model': {
+                'class_path': 'lightning_reflow.models.SimpleReflowModel',
+                'init_args': {
+                    'input_dim': 10,
+                    'hidden_dim': 16,
+                    'output_dim': 2,
+                }
+            },
+            'data': {
+                'class_path': 'lightning_reflow.data.SimpleDataModule',
+                'init_args': {
+                    'batch_size': 4,
+                    'train_samples': 8,
+                    'val_samples': 4,
+                    'input_dim': 10,
+                    'output_dim': 2
+                }
+            },
+            'trainer': {
+                'max_epochs': 1,
+                'max_steps': 1,
+                'enable_checkpointing': False,
+                'default_root_dir': str(temp_dir),
+            }
+        }
+
+        config_path = temp_dir / "config.yaml"
+        with open(config_path, 'w') as f:
+            yaml.dump(config_content, f)
+
+        # Create STALE config.yaml in the logs directory (simulating previous run)
+        logs_dir = temp_dir / "logs"
+        logs_dir.mkdir(exist_ok=True)
+        stale_config = logs_dir / "config.yaml"
+        with open(stale_config, 'w') as f:
+            yaml.dump({'old': 'config'}, f)
+
+        # Mock sys.argv to simulate fresh fit command
+        with patch('sys.argv', ['train.py', 'fit', '--config', str(config_path)]):
+            # Create CLI instance and check that it enables config overwrite
+            with patch('lightning_reflow.cli.lightning_cli.LightningReflowCLI.__init__', return_value=None):
+                cli = LightningReflowCLI.__new__(LightningReflowCLI)
+
+                # Test _is_fit_command() detection
+                assert cli._is_fit_command()
+
+                # Test that config overwrite is enabled
+                kwargs = {}
+                cli._enable_config_overwrite(kwargs)
+                assert 'save_config_kwargs' in kwargs
+                assert kwargs['save_config_kwargs']['overwrite'] is True
+
+    def test_enable_config_overwrite_method(self):
+        """Test that _enable_config_overwrite correctly sets overwrite flag."""
+        with patch('lightning_reflow.cli.lightning_cli.LightningReflowCLI.__init__', return_value=None):
+            cli = LightningReflowCLI.__new__(LightningReflowCLI)
+
+            # Test with empty kwargs
+            kwargs = {}
+            cli._enable_config_overwrite(kwargs)
+            assert kwargs == {'save_config_kwargs': {'overwrite': True}}
+
+            # Test with existing save_config_kwargs
+            kwargs = {'save_config_kwargs': {'skip_none': False}}
+            cli._enable_config_overwrite(kwargs)
+            assert kwargs['save_config_kwargs']['overwrite'] is True
+            assert kwargs['save_config_kwargs']['skip_none'] is False
 
 
 if __name__ == "__main__":

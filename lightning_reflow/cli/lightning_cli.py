@@ -53,9 +53,10 @@ class LightningReflowCLI(LightningCLI):
             self._execute_resume_as_subprocess()
             return
 
-        # For fit commands with a checkpoint, enable config overwrite to avoid errors
-        if self._is_fit_with_checkpoint():
-            logger.info("🔧 Detected fit from checkpoint, enabling config overwrite.")
+        # For ALL fit commands, enable config overwrite to handle stale configs gracefully
+        # This prevents Lightning from aborting when logs/config.yaml exists from previous runs
+        if self._is_fit_command():
+            logger.info("🔧 Enabling config overwrite for fit command (handles stale configs)")
             self._enable_config_overwrite(kwargs)
 
         # Configure parser kwargs for less strict validation if requested
@@ -238,10 +239,14 @@ class LightningReflowCLI(LightningCLI):
     def _is_resume_command(self) -> bool:
         """Check if the command is a resume command."""
         return len(sys.argv) > 1 and sys.argv[1] == RESUME_COMMAND
-    
+
+    def _is_fit_command(self) -> bool:
+        """Check if this is a fit command (with or without checkpoint)."""
+        return len(sys.argv) > 1 and sys.argv[1] == 'fit'
+
     def _is_fit_with_checkpoint(self) -> bool:
         """Check if this is a fit command with a checkpoint path."""
-        is_fit_command = len(sys.argv) > 1 and sys.argv[1] == 'fit'
+        is_fit_command = self._is_fit_command()
         has_ckpt_path = '--ckpt_path' in sys.argv or any(a.startswith('--ckpt_path=') for a in sys.argv)
         return is_fit_command and has_ckpt_path
     
