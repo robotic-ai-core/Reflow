@@ -84,24 +84,26 @@ class ConfigEmbeddingMixin:
         """
         # Store trainer reference for config capture
         self._trainer_ref = trainer
-        
+
         # Only embed config if the context is valid
         if not self._can_embed_config(trainer):
             logger.warning("Skipping config embedding due to invalid context.")
             return
-        
+
         # CRITICAL: Embed Lightning's auto-generated config.yaml ONLY
         # This is the COMPLETE merged configuration including trainer_defaults
-        lightning_config = self._capture_lightning_auto_config(trainer)
-        if not lightning_config:
-            error_msg = (
-                "Lightning config capture failed. Could not capture Lightning's auto-generated config.yaml. "
-                "Checkpoint will not be self-contained. This may cause issues during resume."
-            )
-            logger.error(error_msg)
-            # Don't add any metadata if config capture fails - tests expect empty checkpoint
-            return
-            
+        try:
+            lightning_config = self._capture_lightning_auto_config(trainer)
+        except RuntimeError as e:
+            # Config validation failed - this is CRITICAL and should stop checkpoint saving
+            logger.error(f"❌ Config embedding failed: {e}")
+            # Re-raise to fail the checkpoint save - better to fail loudly than silently embed bad config
+            raise RuntimeError(
+                f"Cannot save checkpoint: config embedding failed. {e}\n\n"
+                f"This is a safety measure to prevent embedding stale/invalid configuration "
+                f"that would cause resume failures later."
+            ) from e
+
         metadata = checkpoint.get(metadata_key, {})
         
         # Add basic metadata (these are our custom metadata for resume)
@@ -148,52 +150,145 @@ class ConfigEmbeddingMixin:
         # No specific restoration needed for config content
     
 
-    def _capture_lightning_auto_config(self, trainer: Trainer) -> Optional[str]:
+    def _capture_lightning_auto_config(self, trainer: Trainer) -> str:
         """
         Capture Lightning's auto-generated config.yaml file ONLY.
-        
-        Lightning automatically saves the COMPLETE merged configuration 
+
+        Lightning automatically saves the COMPLETE merged configuration
         (trainer_defaults + config files) to {log_dir}/config.yaml.
-        
+
         This is our SINGLE SOURCE OF TRUTH for embedded config.
-        
+
         Returns:
-            Raw YAML string content of Lightning's complete config, or None if not available
+            Raw YAML string content of Lightning's complete config
+
+        Raises:
+            RuntimeError: If config is missing, stale, or invalid
         """
         try:
             # Step 1: Find Lightning's log directory
             lightning_log_dir = self._get_lightning_log_dir(trainer)
             if not lightning_log_dir:
-                logger.warning("ConfigEmbeddingMixin: Could not find Lightning log directory")
-                return None
-            
+                raise RuntimeError(
+                    "CRITICAL: Could not find Lightning log directory. "
+                    "Config embedding requires a valid log directory. "
+                    "Ensure trainer has a logger configured."
+                )
+
             # Step 2: Read Lightning's auto-generated config.yaml as raw string
             config_path = lightning_log_dir / "config.yaml"
             if not config_path.exists():
-                logger.warning(f"ConfigEmbeddingMixin: Lightning config not found at {config_path}")
-                return None
-            
+                raise RuntimeError(
+                    f"CRITICAL: Lightning config not found at {config_path}. "
+                    f"This usually means save_config_callback=None was set in LightningCLI, "
+                    f"which disables config saving. Config embedding REQUIRES Lightning to save "
+                    f"the config file. Remove save_config_callback=None from your CLI initialization."
+                )
+
+            # Step 3: Validate config is fresh (not stale from previous runs)
+            self._validate_config_freshness(config_path, lightning_log_dir, trainer)
+
             with open(config_path, 'r') as f:
                 lightning_config_string = f.read().strip()
-            
+
             if not lightning_config_string:
-                logger.warning("ConfigEmbeddingMixin: Lightning config is empty")
-                return None
-            
-            # Step 3: Return raw Lightning config string (preserve exact formatting)
-            logger.debug(f"📋 Captured COMPLETE config from Lightning's auto-generated 'config.yaml'")
-            logger.debug(f"📝 Embedded Lightning's auto-generated config.yaml ({len(lightning_config_string)} chars)")
-            
+                raise RuntimeError(
+                    f"CRITICAL: Lightning config at {config_path} is empty. "
+                    f"This indicates a problem with Lightning's config saving."
+                )
+
+            # Step 4: Return raw Lightning config string (preserve exact formatting)
+            logger.info(f"✅ Captured fresh config from {config_path}")
+            logger.debug(f"📝 Config size: {len(lightning_config_string)} chars")
+
             return lightning_config_string
-            
+
+        except RuntimeError:
+            # Re-raise RuntimeError as-is (these are our validation errors)
+            raise
         except Exception as e:
-            logger.error(f"ConfigEmbeddingMixin: Failed to capture Lightning auto config: {e}")
-            return None
+            raise RuntimeError(
+                f"CRITICAL: Failed to capture Lightning auto config: {e}. "
+                f"Config embedding is required for checkpoint resume."
+            )
+
+    def _validate_config_freshness(self, config_path: Path, log_dir: Path, trainer: Trainer) -> None:
+        """
+        Validate that the config file is fresh and not stale from previous runs.
+
+        Args:
+            config_path: Path to the config.yaml file
+            log_dir: Lightning's log directory
+            trainer: PyTorch Lightning trainer
+
+        Raises:
+            RuntimeError: If stale config is detected
+        """
+        try:
+            # Get config file modification time
+            config_mtime = config_path.stat().st_mtime
+            config_age_seconds = time.time() - config_mtime
+
+            # Check 1: Detect if config is suspiciously old (older than 1 hour before current run)
+            # Allow some buffer since trainer.start_time might not be set yet
+            if config_age_seconds > 3600:  # 1 hour
+                logger.warning(
+                    f"⚠️  Config file is {config_age_seconds / 60:.1f} minutes old. "
+                    f"This may indicate a stale config from a previous run. "
+                    f"Config path: {config_path}"
+                )
+                # Don't raise yet, check if it's in a parent directory (stronger signal)
+
+            # Check 2: Detect if config is in a parent/fallback directory (VERY suspicious)
+            # Lightning should create config in the run-specific log directory
+            # If we're reading from a parent directory, it's likely stale
+            config_parent = config_path.parent
+
+            # Check if config_parent is a proper subdirectory of the logging root
+            # For example:
+            #   Good: logs/protoworld/run_xyz/config.yaml  (run-specific)
+            #   Bad:  logs/config.yaml  (parent directory - STALE!)
+
+            # Simple heuristic: if log_dir has multiple path components compared to config_parent,
+            # we're likely in a run-specific directory
+            try:
+                # Get relative path - if config is in parent, this will have '..'
+                rel_path = config_path.relative_to(log_dir)
+                if str(rel_path) == "config.yaml":
+                    # Config is directly in log_dir - this is expected
+                    logger.debug(f"✅ Config is in run-specific directory: {log_dir}")
+                else:
+                    # Config is in a subdirectory or weird location
+                    logger.warning(f"⚠️  Unexpected config location: {config_path} relative to {log_dir}")
+            except ValueError:
+                # config_path is not relative to log_dir - VERY suspicious
+                raise RuntimeError(
+                    f"CRITICAL: Config file is outside the expected log directory!\n"
+                    f"  Config path: {config_path}\n"
+                    f"  Expected log dir: {log_dir}\n"
+                    f"This indicates config is being loaded from a fallback location, "
+                    f"which likely means it's STALE from a previous run. "
+                    f"Ensure save_config_callback is NOT disabled in your CLI initialization."
+                )
+
+            # Check 3: Warn if config looks like it's from a shared parent directory
+            # For example: logs/config.yaml instead of logs/protoworld/run_xyz/config.yaml
+            if len(log_dir.parts) < 3:
+                # Very short path like "logs" - suspicious
+                logger.warning(
+                    f"⚠️  Log directory path is very short: {log_dir}. "
+                    f"Expected a run-specific subdirectory. "
+                    f"Config at {config_path} may be stale."
+                )
+
+        except Exception as e:
+            # Don't fail validation on unexpected errors, just log
+            logger.warning(f"Could not validate config freshness: {e}")
 
     def _get_lightning_log_dir(self, trainer: Trainer) -> Optional[Path]:
         """
         Get Lightning's log directory where it saves config.yaml.
-        
+
         Returns:
             Path to Lightning's log directory, or None if not available
         """
@@ -205,11 +300,11 @@ class ConfigEmbeddingMixin:
                 elif hasattr(trainer.logger, 'save_dir') and trainer.logger.save_dir:
                     # Some loggers use save_dir instead of log_dir
                     return Path(trainer.logger.save_dir)
-            
+
             # Fallback to trainer's default_root_dir
             if hasattr(trainer, 'default_root_dir') and trainer.default_root_dir:
                 return Path(trainer.default_root_dir)
-            
+
             logger.warning("Could not determine Lightning log directory from trainer")
             return None
         except Exception as e:
