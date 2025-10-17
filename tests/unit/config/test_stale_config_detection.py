@@ -270,6 +270,83 @@ class TestConfigEmbeddingWithStaleDetection:
         assert 'embedded_config_content' in checkpoint['self_contained_metadata']
         assert checkpoint['self_contained_metadata']['config_source'] == 'lightning_auto_generated'
 
+    def test_config_caching_eliminates_false_warnings(self, temp_log_dir, mock_trainer, caplog):
+        """Test that config caching at training start eliminates false age warnings."""
+        # Create fresh config
+        config_path = temp_log_dir / "config.yaml"
+        config_path.write_text("model:\n  class_path: test.Model\n")
+
+        mixin = ConfigEmbeddingMixin()
+        module = MockModule()
+
+        # Capture and cache config at training start (when fresh)
+        mixin.capture_and_cache_config(mock_trainer)
+
+        # Simulate time passing (config naturally ages)
+        import os
+        old_time = time.time() - 120  # Make it 2 minutes old
+        os.utime(config_path, (old_time, old_time))
+
+        # Now save checkpoint - should use cached config, no warnings
+        checkpoint = {}
+        with caplog.at_level("DEBUG"):  # DEBUG level to capture the cached config message
+            mixin.add_config_metadata(mock_trainer, module, checkpoint)
+
+        # Should NOT warn about stale config because we're using cached version
+        assert "seconds old" not in caplog.text
+        # Should see message about using cached config (DEBUG level)
+        assert "Using cached config from training start" in caplog.text
+        # Checkpoint should succeed
+        assert 'self_contained_metadata' in checkpoint
+        assert 'embedded_config_content' in checkpoint['self_contained_metadata']
+
+    def test_config_caching_only_captures_once(self, temp_log_dir, mock_trainer, caplog):
+        """Test that config is only captured once at training start."""
+        # Create fresh config
+        config_path = temp_log_dir / "config.yaml"
+        config_path.write_text("model:\n  class_path: test.Model\n")
+
+        mixin = ConfigEmbeddingMixin()
+
+        # First capture
+        with caplog.at_level("INFO"):
+            mixin.capture_and_cache_config(mock_trainer)
+
+        assert "Capturing config at training start" in caplog.text
+        assert mixin._config_captured_at_start is True
+        assert mixin._cached_config is not None
+
+        # Clear log
+        caplog.clear()
+
+        # Second capture attempt - should skip
+        with caplog.at_level("DEBUG"):
+            mixin.capture_and_cache_config(mock_trainer)
+
+        assert "Config already captured at training start" in caplog.text
+
+    def test_fallback_when_config_not_cached(self, temp_log_dir, mock_trainer, caplog):
+        """Test that fallback works when config wasn't cached at training start."""
+        # Create fresh config
+        config_path = temp_log_dir / "config.yaml"
+        config_path.write_text("model:\n  class_path: test.Model\n")
+
+        mixin = ConfigEmbeddingMixin()
+        module = MockModule()
+
+        # Skip capture_and_cache_config to simulate backwards compatibility case
+        # Directly save checkpoint - should fall back to reading from disk
+        checkpoint = {}
+        with caplog.at_level("WARNING"):
+            mixin.add_config_metadata(mock_trainer, module, checkpoint)
+
+        # Should warn about not using cached config
+        assert "Config not cached at training start" in caplog.text
+        assert "may show false age warnings" in caplog.text
+        # But should still succeed
+        assert 'self_contained_metadata' in checkpoint
+        assert 'embedded_config_content' in checkpoint['self_contained_metadata']
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])

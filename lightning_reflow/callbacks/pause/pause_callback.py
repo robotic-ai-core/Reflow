@@ -769,8 +769,12 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         return ""  # Keep global bar clean
     
     def on_fit_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        """Set model reference for the reproducibility manager."""
+        """Set model reference for the reproducibility manager and capture config."""
         super().on_fit_start(trainer, pl_module)
+
+        # Capture and cache config at training start (eliminates false stale config warnings)
+        self.capture_and_cache_config(trainer)
+
         if self.save_rng_states and hasattr(self, '_reproducibility_manager'):
             self._reproducibility_manager.set_references(model=pl_module, trainer=trainer)
 

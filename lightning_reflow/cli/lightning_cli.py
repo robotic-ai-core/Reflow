@@ -35,24 +35,37 @@ class LightningReflowCLI(LightningCLI):
     command-line arguments and translating them to method calls.
     """
     
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, parser_kwargs=None, **kwargs):
         """
         Initialize the Lightning Reflow CLI.
-        
+
         For resume commands, spawns a new subprocess with the fit command.
+
+        Args:
+            parser_kwargs: Optional dict of kwargs to pass to jsonargparse ArgumentParser.
+                          Can be used to configure parser behavior (e.g., less strict validation).
+            **kwargs: Additional arguments passed to LightningCLI.
         """
         logger.info("🎯 Initializing Lightning Reflow CLI")
-        
+
         # Handle resume command by spawning subprocess with fit command
         if self._is_resume_command():
             self._execute_resume_as_subprocess()
             return
-        
+
         # For fit commands with a checkpoint, enable config overwrite to avoid errors
         if self._is_fit_with_checkpoint():
             logger.info("🔧 Detected fit from checkpoint, enabling config overwrite.")
             self._enable_config_overwrite(kwargs)
-        
+
+        # Configure parser kwargs for less strict validation if requested
+        if parser_kwargs is not None:
+            # Merge user-provided parser_kwargs with any existing ones
+            existing_parser_kwargs = kwargs.get('parser_kwargs', {})
+            merged_parser_kwargs = {**existing_parser_kwargs, **parser_kwargs}
+            kwargs['parser_kwargs'] = merged_parser_kwargs
+            logger.info(f"🔧 Using custom parser configuration: {merged_parser_kwargs}")
+
         # Initialize the Lightning CLI for standard commands (fit, validate, test, predict)
         super().__init__(*args, **kwargs)
     

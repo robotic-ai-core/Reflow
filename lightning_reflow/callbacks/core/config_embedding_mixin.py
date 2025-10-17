@@ -31,29 +31,32 @@ logger = logging.getLogger(__name__)
 class ConfigEmbeddingMixin:
     """
     Mixin to add config embedding functionality to any checkpoint callback.
-    
-    DESIGN PRINCIPLE: Only embed Lightning's auto-generated config.yaml
-    
+
+    DESIGN PRINCIPLE: Capture config ONCE at training start, cache in memory
+
     Lightning automatically saves the COMPLETE merged configuration to:
     {log_dir}/config.yaml
-    
-    This file contains:
-    - trainer_defaults (set programmatically)
-    - Config file settings
-    - All other Lightning CLI settings
-    
-    We embed this COMPLETE config, not individual pieces we try to capture ourselves.
-    
+
+    We capture this config at training START (when it's fresh) and cache it
+    in memory for the entire training session. This avoids false positives
+    from the config naturally aging during training.
+
     Usage:
         class MyCheckpoint(ModelCheckpoint, ConfigEmbeddingMixin):
+            def on_fit_start(self, trainer, pl_module):
+                # Capture and cache config at training start
+                self.capture_and_cache_config(trainer)
+
             def on_save_checkpoint(self, trainer, pl_module, checkpoint):
                 super().on_save_checkpoint(trainer, pl_module, checkpoint)
                 self.add_config_metadata(trainer, pl_module, checkpoint)
     """
-    
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._original_argv = sys.argv.copy()
+        self._cached_config = None  # Cache config at training start
+        self._config_captured_at_start = False
     
     def _can_embed_config(self, trainer: Trainer) -> bool:
         """
@@ -71,11 +74,38 @@ class ConfigEmbeddingMixin:
             logger.warning("No CLI context on trainer, cannot embed config.")
             return False
     
-    def add_config_metadata(self, trainer: Trainer, pl_module: LightningModule, 
+    def capture_and_cache_config(self, trainer: Trainer) -> None:
+        """
+        Capture config at training start and cache in memory.
+
+        This should be called from on_fit_start to capture the config when it's fresh.
+        The cached config is then used for all checkpoint saves during the session.
+
+        Args:
+            trainer: PyTorch Lightning trainer
+        """
+        if self._config_captured_at_start:
+            logger.debug("Config already captured at training start")
+            return
+
+        try:
+            logger.info("📋 Capturing config at training start...")
+            self._cached_config = self._capture_lightning_auto_config(trainer)
+            self._config_captured_at_start = True
+            logger.info(f"✅ Config cached in memory ({len(self._cached_config)} chars)")
+        except RuntimeError as e:
+            # Config capture failed at start - this is critical
+            logger.error(f"❌ Failed to capture config at training start: {e}")
+            raise
+
+    def add_config_metadata(self, trainer: Trainer, pl_module: LightningModule,
                            checkpoint: Dict[str, Any], metadata_key: str = 'self_contained_metadata') -> None:
         """
         Add config-related metadata to checkpoint.
-        
+
+        Uses cached config captured at training start. If config wasn't captured yet,
+        falls back to reading from disk (for backwards compatibility).
+
         Args:
             trainer: PyTorch Lightning trainer
             pl_module: Lightning module being trained
@@ -90,19 +120,24 @@ class ConfigEmbeddingMixin:
             logger.warning("Skipping config embedding due to invalid context.")
             return
 
-        # CRITICAL: Embed Lightning's auto-generated config.yaml ONLY
-        # This is the COMPLETE merged configuration including trainer_defaults
-        try:
-            lightning_config = self._capture_lightning_auto_config(trainer)
-        except RuntimeError as e:
-            # Config validation failed - this is CRITICAL and should stop checkpoint saving
-            logger.error(f"❌ Config embedding failed: {e}")
-            # Re-raise to fail the checkpoint save - better to fail loudly than silently embed bad config
-            raise RuntimeError(
-                f"Cannot save checkpoint: config embedding failed. {e}\n\n"
-                f"This is a safety measure to prevent embedding stale/invalid configuration "
-                f"that would cause resume failures later."
-            ) from e
+        # Use cached config if available (captured at training start)
+        if self._cached_config:
+            logger.debug("Using cached config from training start")
+            lightning_config = self._cached_config
+        else:
+            # Fallback: capture config now (backwards compatibility or if capture_and_cache wasn't called)
+            logger.warning("Config not cached at training start - capturing now (may show false age warnings)")
+            try:
+                lightning_config = self._capture_lightning_auto_config(trainer)
+            except RuntimeError as e:
+                # Config validation failed - this is CRITICAL and should stop checkpoint saving
+                logger.error(f"❌ Config embedding failed: {e}")
+                # Re-raise to fail the checkpoint save - better to fail loudly than silently embed bad config
+                raise RuntimeError(
+                    f"Cannot save checkpoint: config embedding failed. {e}\n\n"
+                    f"This is a safety measure to prevent embedding stale/invalid configuration "
+                    f"that would cause resume failures later."
+                ) from e
 
         metadata = checkpoint.get(metadata_key, {})
         
