@@ -49,6 +49,11 @@ class LightningReflowCLI(LightningCLI):
         """
         logger.info("🎯 Initializing Lightning Reflow CLI")
 
+        # Store model_class and datamodule_class from positional args for _dump_config fix
+        # LightningCLI signature: __init__(model_class, datamodule_class=None, ...)
+        self._user_model_class = args[0] if len(args) > 0 else kwargs.get('model_class')
+        self._user_datamodule_class = args[1] if len(args) > 1 else kwargs.get('datamodule_class')
+
         # CRITICAL: Register numpy safe globals BEFORE any checkpoint loading
         # Lightning CLI's _parse_ckpt_path() loads checkpoints with weights_only=True
         # This must happen before super().__init__() to allow numpy objects in checkpoints
@@ -79,12 +84,69 @@ class LightningReflowCLI(LightningCLI):
     def before_instantiate_classes(self) -> None:
         """
         Hook called BEFORE Lightning instantiates any classes.
-        
+
         This is critical for setting environment variables like PYTORCH_CUDA_ALLOC_CONF
         that MUST be set before CUDA/PyTorch initialization occurs.
         """
         logger.info("🔧 Processing environment variables (BEFORE instantiation)")
         self._process_environment_callback_config()
+
+    def _dump_config(self) -> None:
+        """
+        Override to fix class_path when model_class/datamodule_class are provided programmatically.
+
+        CRITICAL FIX: When subclass_mode_model=True with model_class provided, Lightning CLI
+        saves 'lightning.LightningModule' as the class_path instead of the actual subclass.
+        This breaks checkpoint resume because it tries to instantiate the base class with
+        subclass-specific parameters.
+
+        This method:
+        1. Calls parent _dump_config to generate the config
+        2. Fixes model.class_path to use the actual model class
+        3. Fixes data.class_path to use the actual datamodule class
+        """
+        # Call parent to generate config_dump
+        super()._dump_config()
+
+        # Fix model.class_path if model_class was provided
+        if self._user_model_class is not None and hasattr(self, 'config_dump'):
+            if 'model' in self.config_dump and isinstance(self.config_dump['model'], dict):
+                # Get the full module path for the actual model class
+                model_module = self._user_model_class.__module__
+                model_name = self._user_model_class.__name__
+                correct_class_path = f"{model_module}.{model_name}"
+
+                # Check if class_path is wrong and fix it
+                current_class_path = self.config_dump['model'].get('class_path')
+                if current_class_path == 'lightning.LightningModule':
+                    logger.info(f"🔧 Fixing model.class_path: '{current_class_path}' → '{correct_class_path}'")
+                    self.config_dump['model']['class_path'] = correct_class_path
+                elif current_class_path != correct_class_path:
+                    logger.warning(f"⚠️ Unexpected model.class_path: '{current_class_path}' (expected '{correct_class_path}')")
+                    logger.info(f"🔧 Fixing model.class_path: '{current_class_path}' → '{correct_class_path}'")
+                    self.config_dump['model']['class_path'] = correct_class_path
+                else:
+                    logger.debug(f"✅ model.class_path already correct: '{correct_class_path}'")
+
+        # Fix data.class_path if datamodule_class was provided
+        if self._user_datamodule_class is not None and hasattr(self, 'config_dump'):
+            if 'data' in self.config_dump and isinstance(self.config_dump['data'], dict):
+                # Get the full module path for the actual datamodule class
+                data_module = self._user_datamodule_class.__module__
+                data_name = self._user_datamodule_class.__name__
+                correct_class_path = f"{data_module}.{data_name}"
+
+                # Check if class_path is wrong
+                current_class_path = self.config_dump['data'].get('class_path')
+                if current_class_path == 'lightning.LightningDataModule':
+                    logger.info(f"🔧 Fixing data.class_path: '{current_class_path}' → '{correct_class_path}'")
+                    self.config_dump['data']['class_path'] = correct_class_path
+                elif current_class_path and current_class_path != correct_class_path:
+                    logger.warning(f"⚠️ Unexpected data.class_path: '{current_class_path}' (expected '{correct_class_path}')")
+                    logger.info(f"🔧 Fixing data.class_path: '{current_class_path}' → '{correct_class_path}'")
+                    self.config_dump['data']['class_path'] = correct_class_path
+                else:
+                    logger.debug(f"✅ data.class_path already correct: '{correct_class_path}'")
     
     def before_fit(self) -> None:
         """Hook called before fit starts - add essential callbacks."""

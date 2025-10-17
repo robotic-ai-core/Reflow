@@ -342,21 +342,46 @@ class LightningReflow:
         try:
             import torch
             from ..utils.checkpoint.checkpoint_utils import extract_wandb_run_id
-            
+
             checkpoint = torch.load(str(checkpoint_path), map_location='cpu', weights_only=False)
             run_id = extract_wandb_run_id(checkpoint)
-            
+
             if run_id:
                 logger.info(f"✅ Extracted W&B run ID from checkpoint: {run_id}")
                 return run_id
             else:
                 logger.info("ℹ️ No W&B run ID found in checkpoint metadata")
                 return None
-                
+
         except Exception as e:
             logger.warning(f"⚠️ Failed to extract W&B run ID from checkpoint: {e}")
             return None
-    
+
+    def _extract_original_command(self, checkpoint_path: Union[str, Path]) -> Optional[List[str]]:
+        """Extract original training command from checkpoint metadata.
+
+        This is critical for resume to work correctly when model_class/datamodule_class
+        were passed as positional arguments to LightningReflowCLI.
+        """
+        try:
+            import torch
+            checkpoint = torch.load(str(checkpoint_path), map_location='cpu', weights_only=False)
+
+            # Check pause_callback_metadata for original command
+            metadata = checkpoint.get('pause_callback_metadata', {})
+            original_cmd = metadata.get('original_command')
+
+            if original_cmd and isinstance(original_cmd, list) and len(original_cmd) > 0:
+                logger.info(f"✅ Extracted original command: {' '.join(original_cmd)}")
+                return original_cmd
+            else:
+                logger.debug("ℹ️ No original command found in checkpoint metadata")
+                return None
+
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to extract original command from checkpoint: {e}")
+            return None
+
     def _execute_fit_subprocess(
         self,
         checkpoint_path: Union[str, Path],
@@ -371,9 +396,20 @@ class LightningReflow:
         import subprocess
         import tempfile
         import yaml
-        
-        # Build command for subprocess
-        cmd = [sys.executable, '-m', 'lightning_reflow.cli', 'fit']
+
+        # Extract original command from checkpoint to use the correct training script
+        # This is CRITICAL for model/datamodule classes passed as positional args
+        original_cmd = self._extract_original_command(checkpoint_path)
+
+        if original_cmd and original_cmd[0].endswith('.py'):
+            # Use the original training script
+            cmd = [sys.executable, original_cmd[0], 'fit']
+            logger.info(f"🔄 Using original training script: {original_cmd[0]}")
+        else:
+            # Fallback to generic CLI
+            cmd = [sys.executable, '-m', 'lightning_reflow.cli', 'fit']
+            logger.warning("⚠️ Original command not found, using generic CLI (may fail if model_class was provided)")
+
         
         # Handle embedded config from checkpoint FIRST (preserves --config --ckpt_path order)
         temp_config_path = self._write_temp_config(embedded_config_yaml)
