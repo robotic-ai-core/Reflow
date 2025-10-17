@@ -229,11 +229,11 @@ class ConfigEmbeddingMixin:
             config_mtime = config_path.stat().st_mtime
             config_age_seconds = time.time() - config_mtime
 
-            # Check 1: Detect if config is suspiciously old (older than 1 hour before current run)
-            # Allow some buffer since trainer.start_time might not be set yet
-            if config_age_seconds > 3600:  # 1 hour
+            # Check 1: Detect if config is suspiciously old (older than 1 minute)
+            # Lightning CLI creates config immediately at training start, so >1 min is suspicious
+            if config_age_seconds > 60:  # 1 minute
                 logger.warning(
-                    f"⚠️  Config file is {config_age_seconds / 60:.1f} minutes old. "
+                    f"⚠️  Config file is {config_age_seconds:.1f} seconds old. "
                     f"This may indicate a stale config from a previous run. "
                     f"Config path: {config_path}"
                 )
