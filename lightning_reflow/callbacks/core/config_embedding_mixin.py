@@ -84,6 +84,11 @@ class ConfigEmbeddingMixin:
         Args:
             trainer: PyTorch Lightning trainer
         """
+        # Skip if config embedding is disabled
+        if not self._can_embed_config(trainer):
+            logger.debug("Config embedding disabled - skipping config capture")
+            return
+
         if self._config_captured_at_start:
             logger.debug("Config already captured at training start")
             return

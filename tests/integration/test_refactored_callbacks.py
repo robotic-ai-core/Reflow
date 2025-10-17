@@ -120,6 +120,11 @@ class TestRefactoredCallbacksIntegration:
             accelerator='cpu'
         )
 
+        # Mock CLI context to indicate config saving is disabled (no CLI used in this test)
+        mock_cli = MagicMock()
+        mock_cli.save_config_kwargs = False  # Config saving disabled
+        trainer.cli = mock_cli
+
         # Train
         trainer.fit(model, datamodule)
 
@@ -145,6 +150,11 @@ class TestRefactoredCallbacksIntegration:
             enable_progress_bar=False,
             accelerator='cpu'
         )
+
+        # Mock CLI context to indicate config saving is disabled
+        mock_cli = MagicMock()
+        mock_cli.save_config_kwargs = False
+        trainer.cli = mock_cli
 
         # Train for one epoch
         trainer.fit(model, datamodule)
@@ -245,6 +255,11 @@ class TestRefactoredCallbacksIntegration:
             enable_checkpointing=True,
             accelerator='cpu'
         )
+
+        # Mock CLI context to indicate config saving is disabled
+        mock_cli = MagicMock()
+        mock_cli.save_config_kwargs = False
+        trainer.cli = mock_cli
 
         # Train
         trainer.fit(model, datamodule)

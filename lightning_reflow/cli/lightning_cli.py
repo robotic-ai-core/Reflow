@@ -8,6 +8,7 @@ handling command-line argument parsing and translating them to method calls.
 import argparse
 import logging
 import sys
+import time
 from pathlib import Path
 from lightning.pytorch.cli import LightningCLI
 from typing import Optional
@@ -288,10 +289,46 @@ class LightningReflowCLI(LightningCLI):
         return is_fit_command and has_ckpt_path
     
     def _enable_config_overwrite(self, kwargs):
-        """Enable config overwrite for fit commands with checkpoints."""
+        """Enable config overwrite for fit commands and warn if overwriting stale config."""
+        # Check if we're about to overwrite an existing config
+        try:
+            # Try to determine log directory from command line args
+            log_dir = self._get_log_dir_from_args()
+            if log_dir:
+                config_path = Path(log_dir) / 'config.yaml'
+                if config_path.exists():
+                    config_age = time.time() - config_path.stat().st_mtime
+                    logger.warning(
+                        f"⚠️  Overwriting stale config.yaml from previous run\n"
+                        f"   Path: {config_path}\n"
+                        f"   Age: {config_age:.1f} seconds ({config_age/3600:.1f} hours)\n"
+                        f"   This is normal and safe - a fresh config will be saved."
+                    )
+        except Exception as e:
+            # Don't fail if we can't check - this is just a warning
+            logger.debug(f"Could not check for stale config: {e}")
+
         if 'save_config_kwargs' not in kwargs:
             kwargs['save_config_kwargs'] = {}
         kwargs['save_config_kwargs']['overwrite'] = True
+
+    def _get_log_dir_from_args(self) -> Optional[Path]:
+        """Extract log directory from command line arguments."""
+        try:
+            # Look for --trainer.default_root_dir or similar in sys.argv
+            for i, arg in enumerate(sys.argv):
+                if 'default_root_dir' in arg:
+                    if '=' in arg:
+                        # Format: --trainer.default_root_dir=logs
+                        return Path(arg.split('=')[1])
+                    elif i + 1 < len(sys.argv):
+                        # Format: --trainer.default_root_dir logs
+                        return Path(sys.argv[i + 1])
+
+            # Default fallback
+            return Path('logs')
+        except Exception:
+            return None
     
     def _execute_resume_as_subprocess(self) -> None:
         """Execute resume command by spawning a subprocess with fit command."""

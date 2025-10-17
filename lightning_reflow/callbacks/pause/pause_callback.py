@@ -88,13 +88,9 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         # Debug hook flag - when True, pauses are scheduled but not auto-executed
         self._debug_hooks_enabled = False
         
-        # Initialize config embedding mixin
+        # Initialize config embedding mixin (also stores sys.argv for resume commands)
         ConfigEmbeddingMixin.__init__(self)
-        
-        # Store original command line arguments for resume commands
-        import sys
-        self._original_argv = sys.argv.copy()
-        
+
         # Track last checkpoint path for HPO integration
         self.last_checkpoint_path = None
 
