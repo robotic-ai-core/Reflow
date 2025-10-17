@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 from lightning.pytorch.cli import LightningCLI
-from typing import Optional
+from typing import Optional, Type, Any
 
 from ..core import LightningReflow
 
@@ -93,60 +93,68 @@ class LightningReflowCLI(LightningCLI):
 
     def _dump_config(self) -> None:
         """
-        Override to fix class_path when model_class/datamodule_class are provided programmatically.
+        Override to fix class_path when classes are provided programmatically.
 
-        CRITICAL FIX: When subclass_mode_model=True with model_class provided, Lightning CLI
-        saves 'lightning.LightningModule' as the class_path instead of the actual subclass.
-        This breaks checkpoint resume because it tries to instantiate the base class with
-        subclass-specific parameters.
+        CRITICAL FIX: When subclass_mode_model=True with classes provided programmatically,
+        Lightning CLI saves the base class path (e.g., 'lightning.LightningModule') instead
+        of the actual subclass. This breaks checkpoint resume because it tries to instantiate
+        the base class with subclass-specific parameters.
 
-        This method:
-        1. Calls parent _dump_config to generate the config
-        2. Fixes model.class_path to use the actual model class
-        3. Fixes data.class_path to use the actual datamodule class
+        This method generically fixes class_path for model, datamodule, and any other
+        class parameters that may be added in the future.
         """
         # Call parent to generate config_dump
         super()._dump_config()
 
-        # Fix model.class_path if model_class was provided
-        if self._user_model_class is not None and hasattr(self, 'config_dump'):
-            if 'model' in self.config_dump and isinstance(self.config_dump['model'], dict):
-                # Get the full module path for the actual model class
-                model_module = self._user_model_class.__module__
-                model_name = self._user_model_class.__name__
-                correct_class_path = f"{model_module}.{model_name}"
+        # Generic fix for all class parameters
+        # Maps config_key → (user_class, expected_base_class_path)
+        class_fixes = [
+            ('model', self._user_model_class, 'lightning.LightningModule'),
+            ('data', self._user_datamodule_class, 'lightning.LightningDataModule'),
+            # Future: Add trainer_class, save_config_callback, etc. here
+        ]
 
-                # Check if class_path is wrong and fix it
-                current_class_path = self.config_dump['model'].get('class_path')
-                if current_class_path == 'lightning.LightningModule':
-                    logger.info(f"🔧 Fixing model.class_path: '{current_class_path}' → '{correct_class_path}'")
-                    self.config_dump['model']['class_path'] = correct_class_path
-                elif current_class_path != correct_class_path:
-                    logger.warning(f"⚠️ Unexpected model.class_path: '{current_class_path}' (expected '{correct_class_path}')")
-                    logger.info(f"🔧 Fixing model.class_path: '{current_class_path}' → '{correct_class_path}'")
-                    self.config_dump['model']['class_path'] = correct_class_path
-                else:
-                    logger.debug(f"✅ model.class_path already correct: '{correct_class_path}'")
+        for config_key, user_class, expected_base_path in class_fixes:
+            self._fix_class_path_if_needed(config_key, user_class, expected_base_path)
 
-        # Fix data.class_path if datamodule_class was provided
-        if self._user_datamodule_class is not None and hasattr(self, 'config_dump'):
-            if 'data' in self.config_dump and isinstance(self.config_dump['data'], dict):
-                # Get the full module path for the actual datamodule class
-                data_module = self._user_datamodule_class.__module__
-                data_name = self._user_datamodule_class.__name__
-                correct_class_path = f"{data_module}.{data_name}"
+    def _fix_class_path_if_needed(
+        self,
+        config_key: str,
+        user_class: Optional[Type[Any]],
+        expected_base_path: str
+    ) -> None:
+        """
+        Fix class_path in config_dump for a given config section.
 
-                # Check if class_path is wrong
-                current_class_path = self.config_dump['data'].get('class_path')
-                if current_class_path == 'lightning.LightningDataModule':
-                    logger.info(f"🔧 Fixing data.class_path: '{current_class_path}' → '{correct_class_path}'")
-                    self.config_dump['data']['class_path'] = correct_class_path
-                elif current_class_path and current_class_path != correct_class_path:
-                    logger.warning(f"⚠️ Unexpected data.class_path: '{current_class_path}' (expected '{correct_class_path}')")
-                    logger.info(f"🔧 Fixing data.class_path: '{current_class_path}' → '{correct_class_path}'")
-                    self.config_dump['data']['class_path'] = correct_class_path
-                else:
-                    logger.debug(f"✅ data.class_path already correct: '{correct_class_path}'")
+        Args:
+            config_key: The config section key ('model', 'data', etc.)
+            user_class: The actual class provided by the user (None if not provided)
+            expected_base_path: The base class path that Lightning incorrectly saves
+        """
+        if user_class is None or not hasattr(self, 'config_dump'):
+            return
+
+        if config_key not in self.config_dump:
+            return
+
+        section = self.config_dump[config_key]
+        if not isinstance(section, dict):
+            return
+
+        # Get the correct class_path from the user-provided class
+        correct_class_path = f"{user_class.__module__}.{user_class.__name__}"
+        current_class_path = section.get('class_path')
+
+        # Fix if needed
+        if current_class_path == expected_base_path:
+            logger.info(f"🔧 Fixing {config_key}.class_path: '{current_class_path}' → '{correct_class_path}'")
+            section['class_path'] = correct_class_path
+        elif current_class_path and current_class_path != correct_class_path:
+            logger.warning(f"⚠️ Unexpected {config_key}.class_path: '{current_class_path}' (expected '{correct_class_path}')")
+            logger.info(f"🔧 Fixing {config_key}.class_path: '{current_class_path}' → '{correct_class_path}'")
+            section['class_path'] = correct_class_path
+        else:
+            logger.debug(f"✅ {config_key}.class_path already correct: '{correct_class_path}'")
     
     def before_fit(self) -> None:
         """Hook called before fit starts - add essential callbacks."""
