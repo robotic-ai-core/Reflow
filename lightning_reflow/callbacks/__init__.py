@@ -7,6 +7,7 @@ from .core.memory_cleanup_callback import MemoryCleanupCallback
 from .core.environment_callback import EnvironmentCallback
 from .monitoring.flow_progress_bar_callback import FlowProgressBarCallback
 from .monitoring.throughput_monitor import ThroughputMonitorCallback
+from .torch_compile import TorchCompileCallback
 
 __all__ = [
     "PauseCallback",
@@ -18,4 +19,5 @@ __all__ = [
     "EnvironmentCallback",
     "FlowProgressBarCallback",
     "ThroughputMonitorCallback",
+    "TorchCompileCallback",
 ]
