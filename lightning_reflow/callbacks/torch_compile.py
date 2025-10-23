@@ -64,7 +64,11 @@ class TorchCompileCallback(Callback):
         self,
         enabled: bool = True,
         mode: str = "default",
-        cuda_graphs: bool = False,
+        dynamic: Optional[bool] = None,
+        fullgraph: Optional[bool] = None,
+        backend: Optional[str] = None,
+        options: Optional[Dict[str, Any]] = None,
+        disable: Optional[bool] = None,
         target_modules: Optional[List[str]] = None,
         module_configs: Optional[List[Dict[str, Any]]] = None,
         cleanup_on_fit_end: bool = True,
@@ -77,7 +81,17 @@ class TorchCompileCallback(Callback):
         Args:
             enabled: Whether compilation is enabled
             mode: Compilation mode ("default", "reduce-overhead", "max-autotune")
-            cuda_graphs: Whether to enable CUDA graphs (requires dynamic=False)
+            dynamic: Control dynamic shape handling. None (default) defers to torch.compile's
+                mode-specific defaults. True enables dynamic shapes. False requires static shapes
+                (enables CUDA graphs when supported by the mode).
+            fullgraph: If True, requires entire function to be capturable in a single graph.
+                None (default) defers to torch.compile's default (False).
+            backend: Backend to use for compilation. None (default) uses torch.compile's
+                default ('inductor').
+            options: Additional options dict passed to the backend. None (default) uses
+                torch.compile's defaults.
+            disable: If True, compilation is disabled at torch.compile level.
+                None (default) defers to torch.compile's default (False).
             target_modules: List of module paths to compile (empty list = whole model)
             module_configs: List of per-module configs (overrides global settings)
             cleanup_on_fit_end: Clean up compilation state after training
@@ -87,7 +101,11 @@ class TorchCompileCallback(Callback):
         super().__init__()
         self.enabled = enabled
         self.mode = mode
-        self.cuda_graphs = cuda_graphs
+        self.dynamic = dynamic
+        self.fullgraph = fullgraph
+        self.backend = backend
+        self.options = options
+        self.disable = disable
         self.target_modules = target_modules or []
         self.module_configs = module_configs or []
         self.cleanup_on_fit_end = cleanup_on_fit_end
@@ -137,10 +155,20 @@ class TorchCompileCallback(Callback):
 
     def _compile_with_global_config(self, pl_module: pl.LightningModule) -> None:
         """Compile modules using global configuration."""
-        base_config = {
-            "mode": self.mode,
-            "dynamic": not self.cuda_graphs,  # Static shapes for CUDA graphs
-        }
+        base_config = {"mode": self.mode}
+
+        # Only add parameters if explicitly configured (not None)
+        # This allows torch.compile to use its mode-specific and parameter-specific defaults
+        if self.dynamic is not None:
+            base_config["dynamic"] = self.dynamic
+        if self.fullgraph is not None:
+            base_config["fullgraph"] = self.fullgraph
+        if self.backend is not None:
+            base_config["backend"] = self.backend
+        if self.options is not None:
+            base_config["options"] = self.options
+        if self.disable is not None:
+            base_config["disable"] = self.disable
 
         # Check for whole-model compilation
         if not self.target_modules or self.target_modules == ["."]:
@@ -157,10 +185,20 @@ class TorchCompileCallback(Callback):
         """Compile modules using per-module configurations."""
         for config in self.module_configs:
             module_path = config.get("module_path", ".")
-            compile_config = {
-                "mode": config.get("mode", self.mode),
-                "dynamic": not config.get("cuda_graphs", self.cuda_graphs),
-            }
+            compile_config = {"mode": config.get("mode", self.mode)}
+
+            # Only add parameters if explicitly configured (not None)
+            # Prioritize per-module config, then fall back to global config
+            for param_name, global_value in [
+                ("dynamic", self.dynamic),
+                ("fullgraph", self.fullgraph),
+                ("backend", self.backend),
+                ("options", self.options),
+                ("disable", self.disable),
+            ]:
+                param_value = config.get(param_name, global_value)
+                if param_value is not None:
+                    compile_config[param_name] = param_value
 
             if module_path == ".":
                 self._compile_entire_model(pl_module, compile_config)
@@ -356,7 +394,11 @@ class TorchCompileCallback(Callback):
             "compiled_modules": list(self.metadata.compiled_modules.keys()),
             "compilation_config": {
                 "mode": self.mode,
-                "cuda_graphs": self.cuda_graphs,
+                "dynamic": self.dynamic,
+                "fullgraph": self.fullgraph,
+                "backend": self.backend,
+                "options": self.options,
+                "disable": self.disable,
                 "target_modules": self.target_modules,
             },
             "fallback_modules": self.metadata.fallback_modules,
@@ -400,7 +442,11 @@ class TorchCompileCallback(Callback):
         return {
             "enabled": self.enabled,
             "mode": self.mode,
-            "cuda_graphs": self.cuda_graphs,
+            "dynamic": self.dynamic,
+            "fullgraph": self.fullgraph,
+            "backend": self.backend,
+            "options": self.options,
+            "disable": self.disable,
             "target_modules": self.target_modules,
             "module_configs": self.module_configs,
         }
@@ -409,6 +455,10 @@ class TorchCompileCallback(Callback):
         """Load callback state from checkpoint."""
         self.enabled = state_dict.get("enabled", self.enabled)
         self.mode = state_dict.get("mode", self.mode)
-        self.cuda_graphs = state_dict.get("cuda_graphs", self.cuda_graphs)
+        self.dynamic = state_dict.get("dynamic", self.dynamic)
+        self.fullgraph = state_dict.get("fullgraph", self.fullgraph)
+        self.backend = state_dict.get("backend", self.backend)
+        self.options = state_dict.get("options", self.options)
+        self.disable = state_dict.get("disable", self.disable)
         self.target_modules = state_dict.get("target_modules", self.target_modules)
         self.module_configs = state_dict.get("module_configs", self.module_configs)

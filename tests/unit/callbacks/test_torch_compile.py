@@ -86,7 +86,11 @@ class TestTorchCompileCallback:
         callback = TorchCompileCallback()
         assert callback.enabled is True
         assert callback.mode == "default"
-        assert callback.cuda_graphs is False
+        assert callback.dynamic is None
+        assert callback.fullgraph is None
+        assert callback.backend is None
+        assert callback.options is None
+        assert callback.disable is None
         assert callback.target_modules == []
 
     def test_callback_disabled(self, model, dataloader):
@@ -196,8 +200,8 @@ class TestTorchCompileCallback:
         callback = TorchCompileCallback(
             enabled=True,
             module_configs=[
-                {"module_path": "encoder", "mode": "max-autotune", "cuda_graphs": False},
-                {"module_path": "decoder", "mode": "default", "cuda_graphs": False},
+                {"module_path": "encoder", "mode": "max-autotune", "dynamic": False},
+                {"module_path": "decoder", "mode": "default", "dynamic": True},
             ],
             verbose=False,
         )
@@ -207,6 +211,8 @@ class TestTorchCompileCallback:
         # Check that modules were compiled with different settings
         assert callback.metadata.compiled_modules["encoder"]["mode"] == "max-autotune"
         assert callback.metadata.compiled_modules["decoder"]["mode"] == "default"
+        assert callback.metadata.compiled_modules["encoder"]["dynamic"] is False
+        assert callback.metadata.compiled_modules["decoder"]["dynamic"] is True
 
     def test_compilation_metadata_tracking(self, model):
         """Test that compilation metadata is properly tracked."""
@@ -264,7 +270,11 @@ class TestTorchCompileCallback:
                 "compiled_modules": ["encoder", "decoder"],
                 "compilation_config": {
                     "mode": "default",
-                    "cuda_graphs": False,
+                    "dynamic": None,
+                    "fullgraph": None,
+                    "backend": None,
+                    "options": None,
+                    "disable": None,
                 },
             }
         }
@@ -323,7 +333,9 @@ class TestTorchCompileCallback:
         callback = TorchCompileCallback(
             enabled=True,
             mode="max-autotune",
-            cuda_graphs=True,
+            dynamic=False,
+            fullgraph=True,
+            backend="inductor",
             target_modules=["encoder"],
         )
 
@@ -331,7 +343,9 @@ class TestTorchCompileCallback:
 
         assert state["enabled"] is True
         assert state["mode"] == "max-autotune"
-        assert state["cuda_graphs"] is True
+        assert state["dynamic"] is False
+        assert state["fullgraph"] is True
+        assert state["backend"] == "inductor"
         assert state["target_modules"] == ["encoder"]
 
     def test_load_state_dict(self):
@@ -341,7 +355,9 @@ class TestTorchCompileCallback:
         state = {
             "enabled": False,
             "mode": "reduce-overhead",
-            "cuda_graphs": True,
+            "dynamic": True,
+            "fullgraph": False,
+            "backend": "inductor",
             "target_modules": ["decoder"],
         }
 
@@ -349,7 +365,9 @@ class TestTorchCompileCallback:
 
         assert callback.enabled is False
         assert callback.mode == "reduce-overhead"
-        assert callback.cuda_graphs is True
+        assert callback.dynamic is True
+        assert callback.fullgraph is False
+        assert callback.backend == "inductor"
         assert callback.target_modules == ["decoder"]
 
     def test_compilation_with_different_modes(self):
@@ -382,6 +400,114 @@ class TestTorchCompileCallback:
 
         # Should not have compiled anything
         assert len(callback.metadata.compiled_modules) == 0
+
+    def test_none_passthrough_default_params(self, model):
+        """Test that None parameters are not passed to torch.compile (use PyTorch defaults)."""
+        callback = TorchCompileCallback(
+            enabled=True,
+            mode="default",
+            dynamic=None,  # Should NOT be passed to torch.compile
+            fullgraph=None,  # Should NOT be passed to torch.compile
+            backend=None,  # Should NOT be passed to torch.compile
+            options=None,  # Should NOT be passed to torch.compile
+            disable=None,  # Should NOT be passed to torch.compile
+            target_modules=["encoder"],
+            verbose=False,
+        )
+
+        callback.setup(None, model, "fit")
+
+        # Check that only mode is in the compiled config
+        config = callback.metadata.compiled_modules["encoder"]
+        assert "mode" in config
+        assert config["mode"] == "default"
+        # None values should not be in config
+        assert "dynamic" not in config
+        assert "fullgraph" not in config
+        assert "backend" not in config
+        assert "options" not in config
+        assert "disable" not in config
+
+    def test_explicit_params_passed_through(self, model):
+        """Test that explicit (non-None) parameters are passed to torch.compile."""
+        callback = TorchCompileCallback(
+            enabled=True,
+            mode="max-autotune",
+            dynamic=False,  # Explicit value should be passed
+            fullgraph=True,  # Explicit value should be passed
+            backend="inductor",  # Explicit value should be passed
+            target_modules=["encoder"],
+            verbose=False,
+        )
+
+        callback.setup(None, model, "fit")
+
+        config = callback.metadata.compiled_modules["encoder"]
+        assert config["mode"] == "max-autotune"
+        assert config["dynamic"] is False
+        assert config["fullgraph"] is True
+        assert config["backend"] == "inductor"
+
+    def test_mixed_none_and_explicit_params(self, model):
+        """Test mixed None and explicit parameters."""
+        callback = TorchCompileCallback(
+            enabled=True,
+            mode="reduce-overhead",
+            dynamic=True,  # Explicit
+            fullgraph=None,  # None - should not be passed
+            backend="inductor",  # Explicit
+            options=None,  # None - should not be passed
+            disable=None,  # None - should not be passed
+            target_modules=["encoder"],
+            verbose=False,
+        )
+
+        callback.setup(None, model, "fit")
+
+        config = callback.metadata.compiled_modules["encoder"]
+        assert config["mode"] == "reduce-overhead"
+        assert config["dynamic"] is True
+        assert config["backend"] == "inductor"
+        assert "fullgraph" not in config
+        assert "options" not in config
+        assert "disable" not in config
+
+    def test_per_module_none_passthrough(self, model):
+        """Test None-passthrough works with per-module configs."""
+        callback = TorchCompileCallback(
+            enabled=True,
+            mode="default",  # Global default
+            dynamic=None,  # Global None
+            module_configs=[
+                {
+                    "module_path": "encoder",
+                    "mode": "max-autotune",
+                    "dynamic": False,  # Explicit override
+                    "fullgraph": None,  # None - should not be passed
+                },
+                {
+                    "module_path": "decoder",
+                    "mode": "default",
+                    # dynamic inherited from global (None) - should not be passed
+                    "backend": "inductor",  # Explicit
+                },
+            ],
+            verbose=False,
+        )
+
+        callback.setup(None, model, "fit")
+
+        # Check encoder config
+        encoder_config = callback.metadata.compiled_modules["encoder"]
+        assert encoder_config["mode"] == "max-autotune"
+        assert encoder_config["dynamic"] is False
+        assert "fullgraph" not in encoder_config
+
+        # Check decoder config
+        decoder_config = callback.metadata.compiled_modules["decoder"]
+        assert decoder_config["mode"] == "default"
+        assert decoder_config["backend"] == "inductor"
+        assert "dynamic" not in decoder_config  # Inherited None should not be passed
 
 
 class TestCompilationMetadata:
