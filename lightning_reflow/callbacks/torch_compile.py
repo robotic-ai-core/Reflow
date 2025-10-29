@@ -69,6 +69,8 @@ class TorchCompileCallback(Callback):
         backend: Optional[str] = None,
         options: Optional[Dict[str, Any]] = None,
         disable: Optional[bool] = None,
+        inductor_config: Optional[Dict[str, Any]] = None,
+        dynamo_config: Optional[Dict[str, Any]] = None,
         target_modules: Optional[List[str]] = None,
         module_configs: Optional[List[Dict[str, Any]]] = None,
         cleanup_on_fit_end: bool = True,
@@ -92,6 +94,12 @@ class TorchCompileCallback(Callback):
                 torch.compile's defaults.
             disable: If True, compilation is disabled at torch.compile level.
                 None (default) defers to torch.compile's default (False).
+            inductor_config: Dict of torch._inductor.config settings to apply before compilation.
+                Example: {"triton.cudagraph_skip_dynamic_graphs": True}
+                Keys use dot notation and are applied via setattr on nested config objects.
+            dynamo_config: Dict of torch._dynamo.config settings to apply before compilation.
+                Example: {"cache_size_limit": 256}
+                Keys use dot notation and are applied via setattr on nested config objects.
             target_modules: List of module paths to compile (empty list = whole model)
             module_configs: List of per-module configs (overrides global settings)
             cleanup_on_fit_end: Clean up compilation state after training
@@ -106,6 +114,8 @@ class TorchCompileCallback(Callback):
         self.backend = backend
         self.options = options
         self.disable = disable
+        self.inductor_config = inductor_config or {}
+        self.dynamo_config = dynamo_config or {}
         self.target_modules = target_modules or []
         self.module_configs = module_configs or []
         self.cleanup_on_fit_end = cleanup_on_fit_end
@@ -128,6 +138,88 @@ class TorchCompileCallback(Callback):
                 f"Must be one of {valid_modes}"
             )
 
+    def _apply_inductor_config(self) -> None:
+        """
+        Apply torch._inductor.config settings.
+
+        Supports nested config keys using dot notation:
+        - "triton.cudagraph_skip_dynamic_graphs" -> torch._inductor.config.triton.cudagraph_skip_dynamic_graphs
+        - "max_autotune" -> torch._inductor.config.max_autotune
+        """
+        if not hasattr(torch, '_inductor'):
+            if self.verbose:
+                warnings.warn(
+                    "torch._inductor not available, skipping inductor_config settings",
+                    UserWarning,
+                    stacklevel=2
+                )
+            return
+
+        for key, value in self.inductor_config.items():
+            try:
+                # Handle nested keys with dot notation
+                parts = key.split('.')
+                config_obj = torch._inductor.config
+
+                # Navigate to nested object
+                for part in parts[:-1]:
+                    config_obj = getattr(config_obj, part)
+
+                # Set the final attribute
+                setattr(config_obj, parts[-1], value)
+
+                if self.verbose:
+                    print(f"🔧 Set torch._inductor.config.{key} = {value}")
+
+            except AttributeError as e:
+                if self.verbose:
+                    warnings.warn(
+                        f"Failed to set inductor config '{key}': {e}",
+                        UserWarning,
+                        stacklevel=2
+                    )
+
+    def _apply_dynamo_config(self) -> None:
+        """
+        Apply torch._dynamo.config settings.
+
+        Supports nested config keys using dot notation:
+        - "cache_size_limit" -> torch._dynamo.config.cache_size_limit
+        - "suppress_errors" -> torch._dynamo.config.suppress_errors
+        """
+        if not hasattr(torch, '_dynamo'):
+            if self.verbose:
+                warnings.warn(
+                    "torch._dynamo not available, skipping dynamo_config settings",
+                    UserWarning,
+                    stacklevel=2
+                )
+            return
+
+        for key, value in self.dynamo_config.items():
+            try:
+                # Handle nested keys with dot notation
+                parts = key.split('.')
+                config_obj = torch._dynamo.config
+
+                # Navigate to nested object
+                for part in parts[:-1]:
+                    config_obj = getattr(config_obj, part)
+
+                # Set the final attribute
+                setattr(config_obj, parts[-1], value)
+
+                if self.verbose:
+                    print(f"🔧 Set torch._dynamo.config.{key} = {value}")
+
+            except AttributeError as e:
+                if self.verbose:
+                    warnings.warn(
+                        f"Failed to set dynamo config '{key}': {e}",
+                        UserWarning,
+                        stacklevel=2
+                    )
+
     def setup(self, trainer: pl.Trainer, pl_module: pl.LightningModule, stage: str) -> None:
         """
         Apply compilation during setup phase (after model is on device).
@@ -145,6 +237,12 @@ class TorchCompileCallback(Callback):
         if stage != "fit":
             # Only compile during fit stage
             return
+
+        # Apply inductor and dynamo config settings before compilation
+        if self.inductor_config:
+            self._apply_inductor_config()
+        if self.dynamo_config:
+            self._apply_dynamo_config()
 
         # Use module-specific configs if provided
         if self.module_configs:
@@ -399,6 +497,8 @@ class TorchCompileCallback(Callback):
                 "backend": self.backend,
                 "options": self.options,
                 "disable": self.disable,
+                "inductor_config": self.inductor_config,
+                "dynamo_config": self.dynamo_config,
                 "target_modules": self.target_modules,
             },
             "fallback_modules": self.metadata.fallback_modules,
@@ -447,6 +547,8 @@ class TorchCompileCallback(Callback):
             "backend": self.backend,
             "options": self.options,
             "disable": self.disable,
+            "inductor_config": self.inductor_config,
+            "dynamo_config": self.dynamo_config,
             "target_modules": self.target_modules,
             "module_configs": self.module_configs,
         }
@@ -460,5 +562,7 @@ class TorchCompileCallback(Callback):
         self.backend = state_dict.get("backend", self.backend)
         self.options = state_dict.get("options", self.options)
         self.disable = state_dict.get("disable", self.disable)
+        self.inductor_config = state_dict.get("inductor_config", self.inductor_config)
+        self.dynamo_config = state_dict.get("dynamo_config", self.dynamo_config)
         self.target_modules = state_dict.get("target_modules", self.target_modules)
         self.module_configs = state_dict.get("module_configs", self.module_configs)
