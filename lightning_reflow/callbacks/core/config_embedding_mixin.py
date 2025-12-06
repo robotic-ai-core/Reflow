@@ -82,6 +82,9 @@ class ConfigEmbeddingMixin:
         This should be called from on_fit_start to capture the config when it's fresh.
         The cached config is then used for all checkpoint saves during the session.
 
+        For non-CLI contexts (e.g., direct Trainer usage in tests), config embedding
+        is gracefully skipped since there's no config.yaml file.
+
         Args:
             trainer: PyTorch Lightning trainer
         """
@@ -94,13 +97,20 @@ class ConfigEmbeddingMixin:
             logger.debug("Config already captured at training start")
             return
 
+        # Check if we're in a context where config embedding is possible
+        # For non-CLI usage (direct Trainer), there's no config.yaml to embed
+        if not self._can_embed_config(trainer):
+            logger.info("📋 Config embedding skipped (no CLI context)")
+            self._config_captured_at_start = True  # Mark as "handled" to avoid repeated attempts
+            return
+
         try:
             logger.info("📋 Capturing config at training start...")
             self._cached_config = self._capture_lightning_auto_config(trainer)
             self._config_captured_at_start = True
             logger.info(f"✅ Config cached in memory ({len(self._cached_config)} chars)")
         except RuntimeError as e:
-            # Config capture failed at start - this is critical
+            # Config capture failed at start - this is critical for CLI-based training
             logger.error(f"❌ Failed to capture config at training start: {e}")
             raise
 

@@ -41,6 +41,113 @@ trainer.fit(model, datamodule)
 ```
 
 
+## ConfigMixin for Module Serialization
+
+`ConfigMixin` solves a known issue in PyTorch Lightning where `save_hyperparameters()` doesn't work well with `nn.Module` arguments. It enables config-based serialization and reconstruction of modules with minimal boilerplate.
+
+### Basic Usage
+
+```python
+from lightning_reflow.utils.config import ConfigMixin
+import torch.nn as nn
+
+class MyModel(ConfigMixin, nn.Module):
+    def __init__(self, hidden_dim: int, num_layers: int, dropout: float = 0.1):
+        super().__init__()
+        self.save_config()  # Call right after super().__init__()
+
+        self.hidden_dim = hidden_dim
+        self.layers = nn.ModuleList([
+            nn.Linear(hidden_dim, hidden_dim) for _ in range(num_layers)
+        ])
+
+# Get config (JSON-serializable)
+model = MyModel(hidden_dim=64, num_layers=4)
+config = model.get_config()
+# {'hidden_dim': 64, 'num_layers': 4, 'dropout': 0.1}
+
+# Reconstruct from config
+model2 = MyModel.from_config(config)
+```
+
+### Nested Module Support
+
+For models that wrap other ConfigMixin modules, configs are automatically nested:
+
+```python
+class InnerModel(ConfigMixin, nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        self.save_config()
+        self.linear = nn.Linear(dim, dim)
+
+class OuterModel(ConfigMixin, nn.Module):
+    def __init__(self, inner: nn.Module, scale: float):
+        super().__init__()
+        self.save_config()  # inner's config is automatically extracted
+        self.inner = inner
+
+inner = InnerModel(dim=32)
+outer = OuterModel(inner=inner, scale=2.0)
+config = outer.get_config()
+# {
+#     'inner': {
+#         '__class_path__': 'mymodule.InnerModel',
+#         '__config__': {'dim': 32}
+#     },
+#     'scale': 2.0
+# }
+
+# Full reconstruction including nested modules
+outer2 = OuterModel.from_config(config)
+```
+
+### Integration with LightningModule
+
+Use ConfigMixin with Lightning's "ignore + manual passing" pattern:
+
+```python
+class WorldModel(LightningModule):
+    def __init__(self, dynamics_model: nn.Module, learning_rate: float = 1e-4):
+        super().__init__()
+        # Ignore the module to avoid slow pickling
+        self.save_hyperparameters(ignore=['dynamics_model'])
+
+        # Save module config separately using ConfigMixin
+        if isinstance(dynamics_model, ConfigMixin):
+            self.hparams['dynamics_model_config'] = {
+                '__class_path__': f"{dynamics_model.__class__.__module__}.{dynamics_model.__class__.__name__}",
+                '__config__': dynamics_model.get_config()
+            }
+
+        self.dynamics_model = dynamics_model
+```
+
+Then load checkpoints with automatic reconstruction:
+
+```python
+from lightning_reflow.utils.config import _deserialize_value
+
+def load_checkpoint(path):
+    ckpt = torch.load(path)
+    hparams = ckpt['hyper_parameters']
+
+    # Reconstruct module from saved config
+    dynamics_config = hparams.get('dynamics_model_config')
+    if dynamics_config:
+        dynamics_model = _deserialize_value(dynamics_config)
+
+    return WorldModel.load_from_checkpoint(path, dynamics_model=dynamics_model)
+```
+
+### API Reference
+
+- `save_config(ignore=None)`: Capture `__init__` args. Call right after `super().__init__()`
+- `get_config()`: Return saved config dict (JSON-serializable)
+- `from_config(config)`: Class method to reconstruct module from config
+- `_deserialize_value(value)`: Utility to deserialize nested configs
+- `_import_class(class_path)`: Utility to import class from fully qualified path
+
 ## Notes
 
 - Pause/resume via `PauseCallback`; W&B integration optional
