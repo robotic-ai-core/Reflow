@@ -9,6 +9,9 @@ from lightning.pytorch.callbacks import Callback
 
 from .improved_keyboard_handler import ImprovedKeyboardHandler
 from .pause_state_machine import PauseState, PauseStateMachine
+from .pause_checkpoint_manager import PauseCheckpointManager
+from .pause_upload_handler import PauseUploadHandler
+from .resume_command_printer import ResumeCommandPrinter
 from ..core.config_embedding_mixin import ConfigEmbeddingMixin
 from ..monitoring.flow_progress_bar_callback import FlowProgressBarCallback
 from ...utils.wandb.wandb_artifact_manager import WandbArtifactManager
@@ -69,7 +72,6 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         )
         
         self.checkpoint_dir = Path(checkpoint_dir)
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self.enable_pause = enable_pause
         self.pause_key = pause_key
         self.upload_key = upload_key
@@ -77,22 +79,29 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         self.startup_grace_period = startup_grace_period  # New: store grace period
         self.enable_pause_context_management = enable_pause_context_management
         self.show_pause_countdown = show_pause_countdown
-        
+
         # State management
         self._state_machine = PauseStateMachine()
         self._keyboard_handler: Optional[ImprovedKeyboardHandler] = None
         self._last_key_time = 0.0
         # Initialize shared WandB artifact manager
         self._wandb_manager = WandbArtifactManager(verbose=True)
-        
+
+        # Initialize checkpoint manager (handles checkpoint operations)
+        self._checkpoint_manager = PauseCheckpointManager(self.checkpoint_dir)
+
+        # Initialize upload handler (handles W&B artifact uploads)
+        self._upload_handler = PauseUploadHandler(self._wandb_manager)
+
+        # Initialize resume command printer (handles resume command generation)
+        import sys
+        self._command_printer = ResumeCommandPrinter(sys.argv.copy())
+
         # Debug hook flag - when True, pauses are scheduled but not auto-executed
         self._debug_hooks_enabled = False
-        
+
         # Initialize config embedding mixin (also stores sys.argv for resume commands)
         ConfigEmbeddingMixin.__init__(self)
-
-        # Track last checkpoint path for HPO integration
-        self.last_checkpoint_path = None
 
         # Register scientific reproducibility manager if enabled
         self.save_rng_states = save_rng_states
@@ -124,7 +133,17 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
     
     def get_last_checkpoint(self) -> Optional[Path]:
         """Get the last saved checkpoint path (for HPO integration)."""
-        return self.last_checkpoint_path
+        return self._checkpoint_manager.get_last_checkpoint()
+
+    @property
+    def last_checkpoint_path(self) -> Optional[Path]:
+        """Property for backward compatibility - delegates to checkpoint manager."""
+        return self._checkpoint_manager.last_checkpoint_path
+
+    @last_checkpoint_path.setter
+    def last_checkpoint_path(self, value: Optional[Path]) -> None:
+        """Setter for backward compatibility - delegates to checkpoint manager."""
+        self._checkpoint_manager.last_checkpoint_path = value
 
     def on_train_start(self, trainer: Trainer, pl_module: LightningModule):
         super().on_train_start(trainer, pl_module)
@@ -212,38 +231,7 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         
     def _validate_trainer_state_for_pause(self, trainer: Trainer, pl_module: LightningModule) -> bool:
         """Validate that trainer and module state is safe for pause checkpoint creation."""
-        
-        # Check trainer has required attributes for checkpointing
-        required_trainer_attrs = ['global_step', 'current_epoch', 'logger']
-        for attr in required_trainer_attrs:
-            if not hasattr(trainer, attr):
-                print(f"❌ Trainer missing required attribute for pause: {attr}")
-                return False
-                
-        # Check pl_module is valid
-        if pl_module is None:
-            print(f"❌ LightningModule is None - cannot create pause checkpoint")
-            return False
-            
-        # Check checkpoint directory is accessible
-        try:
-            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            print(f"❌ Cannot access checkpoint directory {self.checkpoint_dir}: {e}")
-            return False
-            
-        # Check we have disk space (basic check)
-        try:
-            import shutil
-            free_space = shutil.disk_usage(self.checkpoint_dir).free
-            if free_space < 100 * 1024 * 1024:  # Less than 100MB
-                print(f"❌ Low disk space for pause checkpoint: {free_space / (1024*1024):.1f} MB")
-                return False
-        except Exception as e:
-            print(f"⚠️ Could not check disk space: {e}")
-            # Continue anyway - disk space check is optional
-            
-        return True
+        return self._checkpoint_manager.validate_trainer_state_for_pause(trainer, pl_module)
             
     def _is_end_of_epoch_validation(self, trainer: Trainer) -> bool:
         """Check if this validation is happening at the end of an epoch."""
@@ -348,31 +336,12 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         return False
 
     def _get_checkpoint_path(self, trainer: Trainer, upload: bool = False) -> Path:
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = int(time.time())
-        tag = "upload" if upload else "pause"
-        filename = f"{tag}_epoch={trainer.current_epoch}_step={trainer.global_step}_{timestamp}.ckpt"
-        return self.checkpoint_dir / filename
-    
+        """Generate checkpoint path - delegates to checkpoint manager."""
+        return self._checkpoint_manager.get_checkpoint_path(trainer, upload=upload)
+
     def _save_checkpoint(self, trainer: Trainer, pl_module: LightningModule, checkpoint_path: Path):
-        # Save checkpoint normally
-        trainer.save_checkpoint(checkpoint_path)
-        
-        # Track the checkpoint path for HPO integration
-        self.last_checkpoint_path = checkpoint_path
-        
-        # Add config metadata if the mixin is available
-        # try:
-        #     # Load the saved checkpoint to add metadata
-        #     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-            
-        #     # Add config metadata using the mixin
-        #     self.add_config_metadata(trainer, pl_module, checkpoint)
-            
-        #     # Save the checkpoint back with metadata
-        #     torch.save(checkpoint, checkpoint_path)
-        # except Exception as e:
-        #     print(f"Warning: Could not add config metadata to checkpoint: {e}")
+        """Save checkpoint - delegates to checkpoint manager."""
+        self._checkpoint_manager.save_checkpoint(trainer, pl_module, checkpoint_path)
 
     def _execute_immediate_pause(self, trainer: Trainer, pl_module: LightningModule):
         should_upload = self._state_machine.is_upload_requested()
@@ -446,287 +415,37 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
             raise
             
     def _save_checkpoint_with_validation(self, trainer: Trainer, pl_module: LightningModule, checkpoint_path: Path):
-        """Save checkpoint with validation and atomic operation."""
-        
-        # Create temporary checkpoint path for atomic operation
-        temp_checkpoint_path = checkpoint_path.with_suffix('.tmp')
-        
-        try:
-            # Save to temporary file first
-            trainer.save_checkpoint(temp_checkpoint_path)
-            
-            # Validate the checkpoint was created and is readable
-            if not temp_checkpoint_path.exists():
-                raise RuntimeError(f"Checkpoint was not created at {temp_checkpoint_path}")
-                
-            checkpoint_size = temp_checkpoint_path.stat().st_size
-            if checkpoint_size < 1024:  # Less than 1KB is suspicious
-                raise RuntimeError(f"Checkpoint file too small ({checkpoint_size} bytes) - likely corrupted")
-            
-            # Try to load and validate the checkpoint structure
-            try:
-                checkpoint_dict = torch.load(temp_checkpoint_path, map_location='cpu', weights_only=False)
-                required_keys = ['state_dict', 'epoch', 'global_step']
-                missing_keys = [key for key in required_keys if key not in checkpoint_dict]
-                if missing_keys:
-                    raise RuntimeError(f"Checkpoint missing required keys: {missing_keys}")
-            except Exception as e:
-                raise RuntimeError(f"Checkpoint validation failed: {e}")
-            
-            # Add config metadata if the mixin is available
-            try:
-                # Load the saved checkpoint to add metadata
-                checkpoint = torch.load(temp_checkpoint_path, map_location='cpu', weights_only=False)
-                
-                # Add config metadata using the mixin
-                self.add_config_metadata(trainer, pl_module, checkpoint)
-                
-                # Save back to temporary file
-                torch.save(checkpoint, temp_checkpoint_path)
-                print(f"✅ Added config metadata to pause checkpoint")
-                
-            except Exception as e:
-                print(f"⚠️ Could not add config metadata to checkpoint: {e}")
-                # Continue without metadata - not critical for pause functionality
-            
-            # Atomic move from temporary to final location
-            temp_checkpoint_path.rename(checkpoint_path)
-            print(f"✅ Checkpoint atomically saved to {checkpoint_path} ({checkpoint_size:,} bytes)")
-            
-        except Exception as e:
-            # Clean up temporary file on any failure
-            if temp_checkpoint_path.exists():
-                try:
-                    temp_checkpoint_path.unlink()
-                except Exception:
-                    pass
-            raise RuntimeError(f"Failed to save pause checkpoint: {e}")
+        """Save checkpoint with validation and atomic operation - delegates to checkpoint manager."""
+        # Create a callback to add config metadata from the mixin
+        def add_config_metadata_callback(checkpoint):
+            self.add_config_metadata(trainer, pl_module, checkpoint)
+
+        self._checkpoint_manager.save_checkpoint_with_validation(
+            trainer, pl_module, checkpoint_path,
+            config_metadata_fn=add_config_metadata_callback
+        )
             
     def _handle_upload_with_fallback(self, trainer: Trainer, pl_module: LightningModule, checkpoint_path: str) -> Optional[str]:
-        """Handle W&B upload with comprehensive fallback."""
-        
-        try:
-            artifact_path = self._handle_wandb_upload(trainer, pl_module, checkpoint_path)
-            if artifact_path:
-                print(f"✅ Pause checkpoint uploaded to W&B: {artifact_path}")
-                return artifact_path
-            else:
-                print(f"⚠️ W&B upload returned None - checkpoint saved locally only")
-                return None
-                
-        except (ValueError, RuntimeError) as e:
-            print(f"⚠️ W&B upload failed but pause will continue: {e}")
-            print(f"💾 Checkpoint available locally at: {checkpoint_path}")
-            return None
-        except Exception as e:
-            print(f"❌ Unexpected error during W&B upload: {e}")
-            print(f"💾 Checkpoint available locally at: {checkpoint_path}")
-            return None
+        """Handle W&B upload with comprehensive fallback - delegates to upload handler."""
+        return self._upload_handler.handle_upload_with_fallback(trainer, pl_module, checkpoint_path)
             
     def _print_resume_commands_with_fallback(self, trainer: Trainer, checkpoint_path: str, artifact_path: Optional[str] = None):
-        """Print resume commands with fallback for errors."""
-        
-        try:
-            self._print_resume_commands(trainer, checkpoint_path, artifact_path)
-        except ValueError as e:
-            print(f"⚠️ Could not generate resume commands: {e}")
-            # Provide basic fallback information
-            print(f"💾 Checkpoint saved at: {checkpoint_path}")
-            if artifact_path:
-                print(f"☁️ W&B artifact: {artifact_path}")
-            print(f"📝 Use standard Lightning resume: --ckpt_path {checkpoint_path}")
-        except Exception as e:
-            print(f"❌ Unexpected error generating resume commands: {e}")
-            print(f"💾 Checkpoint saved at: {checkpoint_path}")
-            print(f"📝 Manually resume with: --ckpt_path {checkpoint_path}")
+        """Print resume commands with fallback - delegates to command printer."""
+        self._command_printer.print_resume_commands_with_fallback(trainer, checkpoint_path, artifact_path)
             
     def _upload_pause_checkpoint_artifact(self, wandb_callback, trainer: Trainer, checkpoint_path: str) -> Optional[str]:
-        """
-        Upload pause checkpoint artifact using shared WandB artifact manager.
-        
-        Args:
-            wandb_callback: WandbArtifactCheckpoint instance for compatibility
-            trainer: PyTorch Lightning trainer
-            checkpoint_path: Path to checkpoint file
-            
-        Returns:
-            Full artifact path if upload successful (e.g. "entity/project/artifact:version"), None otherwise
-            
-        Raises:
-            ValueError: If required inputs are invalid
-            RuntimeError: If W&B manager is not available or configured incorrectly
-        """
-        # Fail early: Validate critical inputs
-        if trainer is None:
-            raise ValueError("Trainer cannot be None for artifact upload")
-        if not checkpoint_path or not Path(checkpoint_path).exists():
-            raise ValueError(f"Checkpoint path does not exist: {checkpoint_path}")
-        if not hasattr(self, '_wandb_manager') or self._wandb_manager is None:
-            raise RuntimeError("W&B artifact manager is not initialized")
-        
-        # Fail early: Check W&B run availability
-        wandb_run = self._wandb_manager.get_wandb_run(trainer)
-        if not wandb_run:
-            raise RuntimeError("No active W&B run found - cannot upload artifacts")
-        
-        # Fail early: Validate trainer state
-        if not hasattr(trainer, 'lightning_module') or trainer.lightning_module is None:
-            raise ValueError("Trainer must have a valid lightning_module for upload")
-        
-        try:
-            # Create pause-specific metadata
-            extra_metadata = {
-                "pause_type": "manual_pause",
-                "checkpoint_type": "pause_checkpoint",
-                "pause_callback_version": "2.1"
-            }
-            
-            # Upload using shared artifact manager - returns full artifact path
-            artifact_path = self._wandb_manager.upload_checkpoint_artifact(
-                trainer=trainer,
-                pl_module=trainer.lightning_module,
-                filepath=checkpoint_path,
-                ckpt_type="pause",
-                aliases=["pause", "latest"],
-                score=None,  # Pause checkpoints don't have scores
-                epoch=trainer.current_epoch,
-                step=trainer.global_step,
-                wandb_run=wandb_run,
-                extra_metadata=extra_metadata
-            )
-            
-            if not artifact_path:
-                raise RuntimeError("Artifact upload returned None - upload failed")
-                
-            return artifact_path  # Returns full path like "entity/project/artifact:version"
-            
-        except (AttributeError, KeyError) as e:
-            # Specific exceptions for missing attributes/keys
-            raise RuntimeError(f"Missing required attribute for artifact upload: {e}") from e
-        except Exception as e:
-            # Re-raise with more context
-            raise RuntimeError(f"Artifact upload failed: {e}") from e
+        """Upload pause checkpoint artifact - delegates to upload handler."""
+        return self._upload_handler._upload_pause_checkpoint_artifact(
+            wandb_callback, trainer, checkpoint_path
+        )
 
     def _handle_wandb_upload(self, trainer: Trainer, pl_module: LightningModule, checkpoint_path: str) -> Optional[str]:
-        """
-        Handle W&B upload and return artifact path if successful.
-        
-        Args:
-            trainer: PyTorch Lightning trainer
-            pl_module: Lightning module 
-            checkpoint_path: Path to checkpoint file
-            
-        Returns:
-            Full artifact path if upload successful, None if W&B not available (graceful degradation)
-            
-        Raises:
-            ValueError: If required inputs are invalid
-        """
-        # Fail early: Validate critical inputs
-        if trainer is None:
-            raise ValueError("Trainer cannot be None for W&B upload")
-        if not hasattr(trainer, 'callbacks') or trainer.callbacks is None:
-            raise ValueError("Trainer must have callbacks list for W&B upload")
-        
-        # Find WandbArtifactCheckpoint callback
-        wandb_callback = None
-        for callback in trainer.callbacks:
-            # Check for WandbArtifactCheckpoint callback with upload_pause_checkpoint method
-            if hasattr(callback, 'upload_pause_checkpoint'):
-                wandb_callback = callback
-                break
-            # Fallback to old method name for backward compatibility
-            elif hasattr(callback, '_upload_pause_checkpoint_artifact'):
-                wandb_callback = callback
-                break
-        
-        # Graceful degradation: No W&B callback is not an error, just no upload
-        if not wandb_callback:
-            print(f"⚠️  No W&B callback found - checkpoint saved locally only")
-            return None
-        
-        # Attempt upload with proper error handling
-        try:
-            # Use new method if available, otherwise use fallback
-            if hasattr(wandb_callback, 'upload_pause_checkpoint'):
-                artifact_path = wandb_callback.upload_pause_checkpoint(trainer, trainer.lightning_module, checkpoint_path)
-            else:
-                artifact_path = self._upload_pause_checkpoint_artifact(wandb_callback, trainer, checkpoint_path)
-            print(f"✅ Pause checkpoint uploaded to W&B successfully")
-            return artifact_path
-            
-        except (ValueError, RuntimeError) as e:
-            # Expected errors from upload method - log and gracefully degrade
-            print(f"❌ Failed to upload pause checkpoint to W&B: {e}")
-            return None
-        except Exception as e:
-            # Unexpected errors - re-raise with context
-            raise RuntimeError(f"Unexpected error during W&B upload: {e}") from e
+        """Handle W&B upload - delegates to upload handler."""
+        return self._upload_handler.handle_wandb_upload(trainer, pl_module, checkpoint_path)
 
     def _print_resume_commands(self, trainer: Trainer, checkpoint_path: str, artifact_path: Optional[str] = None) -> None:
-        """
-        Print resume commands based on what's available.
-        
-        Args:
-            trainer: PyTorch Lightning trainer (unused but kept for interface consistency)
-            checkpoint_path: Path to local checkpoint file
-            artifact_path: Optional W&B artifact path
-            
-        Raises:
-            ValueError: If required inputs are invalid
-        """
-        # Fail early: Validate critical inputs
-        if not checkpoint_path:
-            raise ValueError("Checkpoint path cannot be empty")
-        if not hasattr(self, '_original_argv') or not self._original_argv:
-            raise ValueError("Original argv not stored - cannot generate resume commands")
-        
-        # Extract script name and ensure "python" is included for copy-paste convenience
-        script_name = self._original_argv[0] if self._original_argv else "train_lightning.py"
-
-        # Detect if running via module and provide user-friendly command
-        if ("__main__.py" in script_name or
-            script_name.endswith("/lightning_reflow/cli/__main__.py") or
-            "lightning_reflow" in script_name and "__main__" in script_name):
-            # Running via python -m lightning_reflow.cli - suggest user-friendly command
-            # Use the actual script that invoked the CLI rather than hardcoding train_lightning.py
-            import sys
-            if len(sys.argv) > 0 and sys.argv[0].endswith('.py'):
-                script_command = f"python {sys.argv[0]}"
-            else:
-                # Fallback to a generic command if we can't determine the actual script
-                script_command = "python train_lightning.py"
-        elif not script_name.startswith("python"):
-            script_command = f"python {script_name}"
-        else:
-            script_command = script_name
-        
-        print(f"\n🔄 Training paused. Resume options:")
-        print(f"📁 Local resume:    {script_command} resume --checkpoint-path {checkpoint_path}")
-        
-        if artifact_path:
-            print(f"☁️  W&B resume:     {script_command} resume --checkpoint-artifact {artifact_path}")
-        
-        # Also show the legacy method for backward compatibility
-        # Filter out any existing --ckpt_path arguments to avoid duplicates/conflicts
-        filtered_argv = []
-        i = 0
-        while i < len(self._original_argv):
-            if self._original_argv[i] == '--ckpt_path':
-                # Skip both the flag and its value
-                i += 2
-            elif self._original_argv[i].startswith('--ckpt_path='):
-                # Skip combined flag=value format
-                i += 1
-            else:
-                filtered_argv.append(self._original_argv[i])
-                i += 1
-
-        legacy_command = f"python {' '.join(filtered_argv)}" if not filtered_argv[0].startswith("python") else ' '.join(filtered_argv)
-        print(f"📁 Legacy method:   {legacy_command} --ckpt_path {checkpoint_path}")
-        if artifact_path:
-            # For legacy method, we can use --resume_from_wandb flag
-            print(f"☁️  Legacy W&B:     {legacy_command} --resume_from_wandb {artifact_path}")
+        """Print resume commands - delegates to command printer."""
+        self._command_printer.print_resume_commands(trainer, checkpoint_path, artifact_path)
 
     def _check_debug_hooks(self):
         """Check for debug hook environment variables and trigger appropriate states."""
@@ -778,9 +497,11 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         """Trigger post-restoration hooks for scientific reproducibility."""
         super().on_load_checkpoint(trainer, pl_module, checkpoint)
 
-        # Update _original_argv to reflect current command line when resuming
-        # This ensures the legacy resume command shows the correct checkpoint path
+        # Update command printer's argv to reflect current command line when resuming
+        # This ensures the resume command shows the correct checkpoint path
         import sys
+        self._command_printer.update_original_argv(sys.argv.copy())
+        # Also update mixin's _original_argv for backward compatibility
         self._original_argv = sys.argv.copy()
 
         if self.save_rng_states and hasattr(self, '_reproducibility_manager'):
