@@ -3,6 +3,9 @@ import torch
 import warnings
 from typing import Any, Dict, List, Optional
 
+from lightning_reflow.utils.torch_utils import extract_batch_size
+
+
 class StepOutputLoggerCallback(pl.Callback):
     """
     Logs scalar metrics returned in a dictionary by training_step,
@@ -18,20 +21,9 @@ class StepOutputLoggerCallback(pl.Callback):
         self.train_prog_bar_metrics = train_prog_bar_metrics if train_prog_bar_metrics is not None else []
         self.val_prog_bar_metrics = val_prog_bar_metrics if val_prog_bar_metrics is not None else []
         self.test_prog_bar_metrics = test_prog_bar_metrics if test_prog_bar_metrics is not None else []
-        
+
         self.train_prog_bar_metrics = list(set(self.train_prog_bar_metrics + ['loss']))
         self.val_prog_bar_metrics = list(set(self.val_prog_bar_metrics + ['val_loss']))
-
-    def _get_batch_size(self, batch: Any) -> int:
-        if isinstance(batch, torch.Tensor):
-            return batch.shape[0]
-        elif isinstance(batch, (list, tuple)) and len(batch) > 0 and isinstance(batch[0], torch.Tensor):
-            return batch[0].shape[0]
-        elif isinstance(batch, dict):
-            for key, value in batch.items():
-                if isinstance(value, torch.Tensor):
-                    return value.shape[0]
-        return 1
 
     def _log_metrics_from_dict(
         self,
@@ -48,7 +40,7 @@ class StepOutputLoggerCallback(pl.Callback):
             warnings.warn(f"StepOutputLoggerCallback: Expected 'outputs' to be a dict, got {type(outputs)}. Skipping logging for this step.", UserWarning)
             return
 
-        batch_size = self._get_batch_size(batch)
+        batch_size = extract_batch_size(batch)
 
         for key, value in outputs.items():
             metric_to_log: Optional[torch.Tensor] = None

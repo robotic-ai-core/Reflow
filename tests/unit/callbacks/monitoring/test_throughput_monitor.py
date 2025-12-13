@@ -19,6 +19,8 @@ import lightning.pytorch as pl
 from lightning.pytorch import Trainer
 from unittest.mock import Mock, patch, MagicMock
 
+from lightning_reflow.utils.torch_utils import extract_batch_size
+
 from lightning_reflow.callbacks.monitoring.throughput_monitor import (
     ThroughputMonitorCallback,
     DEFAULT_EMA_SMOOTHING,
@@ -115,50 +117,49 @@ class TestThroughputMonitorCallback:
         assert callback.log_on_epoch is False
 
     # -------------------------------------------------------------------------
-    # Batch size extraction tests
+    # Batch size extraction tests (using shared utility)
     # -------------------------------------------------------------------------
 
     def test_get_batch_size_dict_observation_images(self, callback):
         """Test batch size extraction from dict with observation.images key."""
         batch = {"observation.images": torch.randn(8, 3, 64, 64)}
-        assert callback._get_batch_size(batch) == 8
+        assert extract_batch_size(batch) == 8
 
     def test_get_batch_size_dict_input(self, callback):
         """Test batch size extraction from dict with input key."""
         batch = {"input": torch.randn(16, 10)}
-        assert callback._get_batch_size(batch) == 16
+        assert extract_batch_size(batch) == 16
 
     def test_get_batch_size_dict_x(self, callback):
         """Test batch size extraction from dict with x key."""
         batch = {"x": torch.randn(4, 20), "y": torch.randn(4)}
-        assert callback._get_batch_size(batch) == 4
+        assert extract_batch_size(batch) == 4
 
     def test_get_batch_size_dict_fallback(self, callback):
         """Test batch size extraction from dict with unknown keys."""
         batch = {"custom_key": torch.randn(12, 5)}
-        assert callback._get_batch_size(batch) == 12
+        assert extract_batch_size(batch) == 12
 
     def test_get_batch_size_tuple(self, callback):
         """Test batch size extraction from tuple."""
         batch = (torch.randn(6, 10), torch.randn(6, 2))
-        assert callback._get_batch_size(batch) == 6
+        assert extract_batch_size(batch) == 6
 
     def test_get_batch_size_list(self, callback):
         """Test batch size extraction from list."""
         batch = [torch.randn(5, 10), torch.randn(5)]
-        assert callback._get_batch_size(batch) == 5
+        assert extract_batch_size(batch) == 5
 
     def test_get_batch_size_tensor(self, callback):
         """Test batch size extraction from direct tensor."""
         batch = torch.randn(7, 10)
-        assert callback._get_batch_size(batch) == 7
+        assert extract_batch_size(batch) == 7
 
     def test_get_batch_size_unknown_format(self, callback):
         """Test batch size extraction from unknown format defaults to 1."""
         batch = "unknown"
-        with patch.object(callback, '_get_batch_size', wraps=callback._get_batch_size):
-            size = callback._get_batch_size(batch)
-            assert size == 1
+        size = extract_batch_size(batch)
+        assert size == 1
 
     # -------------------------------------------------------------------------
     # EMA calculation tests

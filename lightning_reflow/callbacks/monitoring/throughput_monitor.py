@@ -12,6 +12,8 @@ from typing import Any, Dict, Optional
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import Callback
 
+from lightning_reflow.utils.torch_utils import extract_batch_size
+
 logger = logging.getLogger(__name__)
 
 # Default smoothing factor for exponential moving average
@@ -78,30 +80,6 @@ class ThroughputMonitorCallback(Callback):
         self._val_total_samples: int = 0
         self._val_run_count: int = 0
 
-    def _get_batch_size(self, batch: Any) -> int:
-        """Extract batch size from various batch formats."""
-        if isinstance(batch, dict):
-            # Try common keys for batch data
-            for key in ['observation.images', 'input', 'x', 'image', 'data']:
-                if key in batch:
-                    tensor = batch[key]
-                    if hasattr(tensor, 'shape'):
-                        return tensor.shape[0]
-            # Fallback: get first tensor's batch size
-            for value in batch.values():
-                if hasattr(value, 'shape') and len(value.shape) > 0:
-                    return value.shape[0]
-        elif isinstance(batch, (list, tuple)):
-            # Assume first element is input tensor
-            if len(batch) > 0 and hasattr(batch[0], 'shape'):
-                return batch[0].shape[0]
-        elif hasattr(batch, 'shape'):
-            # Direct tensor
-            return batch.shape[0]
-
-        logger.warning("Could not determine batch size, defaulting to 1")
-        return 1
-
     def _update_ema(self, current_value: float, ema_value: Optional[float]) -> float:
         """Update exponential moving average."""
         if ema_value is None:
@@ -142,7 +120,7 @@ class ThroughputMonitorCallback(Callback):
             return
 
         elapsed = time.perf_counter() - self._train_batch_start_time
-        batch_size = self._get_batch_size(batch)
+        batch_size = extract_batch_size(batch)
 
         # Update counters
         self._train_total_samples += batch_size
@@ -241,7 +219,7 @@ class ThroughputMonitorCallback(Callback):
         dataloader_idx: int = 0,
     ) -> None:
         """Update validation sample counters."""
-        batch_size = self._get_batch_size(batch)
+        batch_size = extract_batch_size(batch)
         self._val_epoch_samples += batch_size
         self._val_total_samples += batch_size
 
