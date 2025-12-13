@@ -20,7 +20,7 @@ class TestFlowProgressBarResume:
     def test_progress_bar_immediate_initialization(self):
         """Test that progress bar initialization happens immediately in on_train_start."""
         callback = FlowProgressBarCallback()
-        
+
         # Mock trainer with global_step = 0 initially
         trainer = Mock()
         trainer.global_step = 0
@@ -33,15 +33,11 @@ class TestFlowProgressBarResume:
         trainer.num_val_batches = None
         trainer.num_training_batches = float('inf')
         trainer.accumulate_grad_batches = 1
+        trainer.callbacks = []  # Required for interval calculator
         trainer.state = Mock()
         trainer.state.stage = None
         trainer.validating = False
-        
-        # Mock methods that will be called during initialization
-        callback._get_total_steps = Mock(return_value=1000)
-        callback._get_val_check_interval_steps = Mock(return_value=None)
-        callback._is_iterable_dataset = Mock(return_value=True)
-        
+
         # Call on_train_start - should initialize progress bars immediately
         callback.on_train_start(trainer, Mock())
         
@@ -53,7 +49,7 @@ class TestFlowProgressBarResume:
     def test_progress_bar_initialization_with_resumed_global_step(self):
         """Test that progress bars are initialized with correct global_step when resuming."""
         callback = FlowProgressBarCallback()
-        
+
         # Mock trainer simulating resumed state
         trainer = Mock()
         trainer.global_step = 1234  # Simulating resumed state
@@ -66,35 +62,31 @@ class TestFlowProgressBarResume:
         trainer.num_val_batches = None  # No validation batches
         trainer.num_training_batches = float('inf')  # Unknown number of batches
         trainer.accumulate_grad_batches = 1
+        trainer.callbacks = []  # Required for interval calculator
         trainer.state = Mock()
         trainer.state.stage = None
         trainer.validating = False
-        
-        # Mock that we can get total steps
-        callback._get_total_steps = Mock(return_value=2000)
-        callback._get_val_check_interval_steps = Mock(return_value=None)
-        callback._is_iterable_dataset = Mock(return_value=True)
-        
+
         # Call on_train_start - should initialize bars immediately
         callback.on_train_start(trainer, Mock())
-        
+
         # Verify bars are initialized with correct global_step
         assert callback.total_steps_bar is not None
         assert callback.total_steps_bar.n == 1234  # tqdm sets n to initial value
         assert callback.total_steps_bar.initial == 1234  # Initial should be set to global_step
         assert callback._progress_bar_initialized is True
-        
+
         # Now call on_train_batch_start - bars should already be initialized
         callback.on_train_batch_start(trainer, Mock(), Mock(), 0)
-        
+
         # Verify progress bars remain initialized with same values
         assert callback.total_steps_bar is not None
         assert callback.total_steps_bar.initial == 1234  # Initial value preserved
-    
+
     def test_progress_bar_not_reinitialized_on_subsequent_batches(self):
         """Test that progress bars are not re-initialized on subsequent batches."""
         callback = FlowProgressBarCallback()
-        
+
         # Setup
         trainer = Mock()
         trainer.global_step = 100
@@ -106,12 +98,12 @@ class TestFlowProgressBarResume:
         trainer.callback_metrics = {}  # Mock empty metrics
         trainer.num_val_batches = None
         trainer.num_training_batches = float('inf')
-        
-        callback._trainer = trainer
-        callback._get_total_steps = Mock(return_value=1000)
-        callback._get_val_check_interval_steps = Mock(return_value=None)
-        callback._is_iterable_dataset = Mock(return_value=True)
-        
+        trainer.accumulate_grad_batches = 1
+        trainer.callbacks = []  # Required for interval calculator
+        trainer.state = Mock()
+        trainer.state.stage = None
+        trainer.validating = False
+
         # Initialize
         callback.on_train_start(trainer, Mock())
         callback.on_train_batch_start(trainer, Mock(), Mock(), 0)
@@ -133,14 +125,15 @@ class TestFlowProgressBarResume:
         """Test that progress bar handles disabled state correctly."""
         callback = FlowProgressBarCallback()
         callback._enabled = False  # Disable the callback
-        
+
         trainer = Mock()
         trainer.global_step = 500
         trainer.logger = None
-        
+        trainer.callbacks = []  # Required for interval calculator
+
         # Set up the callback's internal trainer reference
         callback._trainer = trainer
-        
+
         # Should not crash when disabled
         callback.on_train_start(trainer, Mock())
         
