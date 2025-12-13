@@ -27,6 +27,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from ...utils.logging.logging_config import get_logger
 from ...utils.wandb.wandb_artifact_manager import WandbArtifactManager
 from ...utils.checkpoint.wandb_artifact_state import WandbArtifactState
+from .checkpoint_upload_helper import CheckpointUploadHelper
 
 
 class UploadReason(Enum):
@@ -108,12 +109,13 @@ class WandbArtifactCheckpoint(pl.Callback):
         self.config = WandbCheckpointConfig(**kwargs)
         self.state = UploadState()
         self.logger = get_logger(__name__)
-        
+
         # References to other components
         self._model_checkpoint_ref: Optional[ModelCheckpoint] = None
         self._wandb_run_ref: Optional[wandb.sdk.wandb_run.Run] = None
         self._wandb_manager = WandbArtifactManager(verbose=self.config.wandb_verbose)
-        
+        self._upload_helper = CheckpointUploadHelper(self.config)
+
         # Register for state persistence
         self._register_for_state_persistence()
     
@@ -360,16 +362,13 @@ class WandbArtifactCheckpoint(pl.Callback):
         """Upload a single checkpoint and return artifact info."""
         if not Path(filepath).exists():
             return None
-        
-        # Prepare aliases
-        aliases = self._create_aliases(ckpt_type, reason)
-        
-        # Get epoch and step
-        epoch, step = self._resolve_epoch_step(filepath, trainer)
-        
-        # Handle compression if enabled
-        upload_path = self._prepare_upload_path(filepath)
-        
+
+        # Use helper for preparation
+        aliases = self._upload_helper.create_aliases(ckpt_type, reason)
+        epoch, step = self._upload_helper.resolve_epoch_step(filepath, trainer)
+        upload_path = self._upload_helper.prepare_upload_path(filepath)
+        extra_metadata = self._upload_helper.get_extra_metadata(reason, self.state.training_start_time)
+
         try:
             # Upload via manager
             artifact_path = self._wandb_manager.upload_checkpoint_artifact(
@@ -382,9 +381,9 @@ class WandbArtifactCheckpoint(pl.Callback):
                 epoch=epoch,
                 step=step,
                 wandb_run=self._wandb_run_ref,
-                extra_metadata=self._get_extra_metadata(reason)
+                extra_metadata=extra_metadata
             )
-            
+
             if artifact_path:
                 return {
                     "type": ckpt_type,
@@ -397,23 +396,16 @@ class WandbArtifactCheckpoint(pl.Callback):
             # Cleanup temporary files
             if upload_path != filepath and Path(upload_path).exists():
                 Path(upload_path).unlink()
-        
+
         return None
     
     def _get_periodic_checkpoints_to_upload(self) -> List[Tuple[str, str]]:
         """Determine which checkpoints to upload for periodic uploads."""
-        checkpoints = []
-        
-        # For periodic uploads, we should upload timestamped checkpoints
-        # Best/latest should only be uploaded at the actual end of training
-        if self._model_checkpoint_ref.last_model_path:
-            # Always use timestamped names for periodic uploads
-            checkpoints.append((
-                self._model_checkpoint_ref.last_model_path,
-                f"epoch_{self.state.epoch_count}_step_{self.state.validation_count}"
-            ))
-        
-        return checkpoints
+        return self._upload_helper.get_periodic_checkpoints_to_upload(
+            self._model_checkpoint_ref,
+            self.state.epoch_count,
+            self.state.validation_count
+        )
     
     # ============= Utility Methods =============
     
@@ -483,60 +475,18 @@ class WandbArtifactCheckpoint(pl.Callback):
     def _create_emergency_checkpoint(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule",
                                     reason: str) -> Optional[str]:
         """Create an emergency checkpoint with current state."""
-        try:
-            # Generate filename
-            filename = f"emergency-{reason}-epoch={trainer.current_epoch}-step={trainer.global_step}.ckpt"
-            
-            # Determine path
-            if self._model_checkpoint_ref and self._model_checkpoint_ref.dirpath:
-                checkpoint_path = Path(self._model_checkpoint_ref.dirpath) / filename
-            else:
-                checkpoint_dir = Path(trainer.default_root_dir) / "checkpoints"
-                checkpoint_dir.mkdir(parents=True, exist_ok=True)
-                checkpoint_path = checkpoint_dir / filename
-            
-            # Save comprehensive checkpoint
-            from ...utils.checkpoint.checkpoint_utils import save_comprehensive_checkpoint
-            save_comprehensive_checkpoint(
-                trainer, pl_module,
-                str(checkpoint_path),
-                reason=f"emergency_{reason}",
-                extra_metadata={'wandb_run_id': self._wandb_run_ref.id if self._wandb_run_ref else None}
-            )
-            
-            if checkpoint_path.exists() and checkpoint_path.stat().st_size > 0:
-                self._log_verbose(trainer, f"Created emergency checkpoint: {checkpoint_path}")
-                return str(checkpoint_path)
-                
-        except Exception as e:
-            self.logger.error(f"Failed to create emergency checkpoint: {e}")
-        
-        return None
-    
-    def _prepare_upload_path(self, filepath: str) -> str:
-        """Prepare file for upload, potentially compressing it."""
-        if not self.config.use_compression:
-            return filepath
-        
-        try:
-            compressed_path = tempfile.mktemp(suffix='.ckpt.gz')
-            with open(filepath, 'rb') as f_in:
-                with gzip.open(compressed_path, 'wb') as f_out:
-                    f_out.write(f_in.read())
-            
-            original_size = Path(filepath).stat().st_size
-            compressed_size = Path(compressed_path).stat().st_size
-            ratio = (1 - compressed_size / original_size) * 100
-            self.logger.info(f"Compressed checkpoint: {ratio:.1f}% size reduction")
-            
-            return compressed_path
-        except Exception as e:
-            self.logger.warning(f"Compression failed, using original: {e}")
-            return filepath
-    
-    # ============= State Persistence =============
-    
-    
+        dirpath = self._model_checkpoint_ref.dirpath if self._model_checkpoint_ref else None
+        wandb_run_id = self._wandb_run_ref.id if self._wandb_run_ref else None
+
+        result = self._upload_helper.create_emergency_checkpoint(
+            trainer, pl_module, reason, dirpath, wandb_run_id
+        )
+
+        if result:
+            self._log_verbose(trainer, f"Created emergency checkpoint: {result}")
+
+        return result
+
     # ============= Helper Methods =============
     
     def _log_verbose(self, trainer: Optional["pl.Trainer"], message: str) -> None:
@@ -570,62 +520,10 @@ class WandbArtifactCheckpoint(pl.Callback):
         self.logger.info(f"Successfully uploaded {len(artifacts)} artifacts ({reason.value})")
         for artifact in artifacts:
             self.logger.info(f"  - {artifact['type']}: {artifact['artifact']}")
-    
-    def _create_aliases(self, ckpt_type: str, reason: UploadReason) -> List[str]:
-        """Create aliases for the artifact."""
-        aliases = [ckpt_type]
-        
-        if reason == UploadReason.EXCEPTION:
-            aliases.append("crash_recovery")
-        elif reason == UploadReason.PAUSE_REQUESTED:
-            aliases.append("pause")
-        elif reason in [UploadReason.PERIODIC_VALIDATION, UploadReason.PERIODIC_EPOCH]:
-            aliases.append("periodic")
-        
-        aliases.append("latest")  # Always mark as latest
-        
-        return aliases
-    
-    def _get_extra_metadata(self, reason: UploadReason) -> Dict[str, Any]:
-        """Get extra metadata for the upload."""
-        return {
-            "upload_reason": reason.value,
-            "artifact_type": self.config.artifact_type,
-            "compressed": self.config.use_compression,
-            "monitored_metric": self.config.model_checkpoint_monitor_metric,
-            "training_duration_minutes": (
-                (time.time() - self.state.training_start_time) / 60.0 
-                if self.state.training_start_time else None
-            )
-        }
-    
-    def _resolve_epoch_step(self, filepath: str, trainer: "pl.Trainer") -> Tuple[int, int]:
-        """Extract or infer epoch and step from checkpoint path."""
-        # Try to parse from filename
-        path = Path(filepath)
-        filename = path.stem
-        
-        epoch, step = trainer.current_epoch, trainer.global_step
-        
-        # Try to extract from filename patterns
-        if "epoch" in filename and "step" in filename:
-            import re
-            epoch_match = re.search(r'epoch[=_]?(\d+)', filename)
-            step_match = re.search(r'step[=_]?(\d+)', filename)
-            
-            if epoch_match:
-                epoch = int(epoch_match.group(1))
-            if step_match:
-                step = int(step_match.group(1))
-        
-        return epoch, step
-    
+
     def _get_best_score(self) -> Optional[float]:
         """Get the best model score."""
-        if self._model_checkpoint_ref and self._model_checkpoint_ref.best_model_score:
-            score = self._model_checkpoint_ref.best_model_score
-            return score.item() if isinstance(score, torch.Tensor) else float(score)
-        return None
+        return self._upload_helper.get_best_score(self._model_checkpoint_ref)
     
     def _get_current_score(self, trainer: "pl.Trainer") -> Optional[float]:
         """Get current score from trainer."""
@@ -636,10 +534,7 @@ class WandbArtifactCheckpoint(pl.Callback):
     
     def _is_duplicate_upload(self, path: str, uploaded: List[Dict]) -> bool:
         """Check if this would be a duplicate upload."""
-        for artifact in uploaded:
-            if artifact.get('filepath') == path:
-                return True
-        return False
+        return self._upload_helper.is_duplicate_upload(path, uploaded)
     
     def _upload_all_checkpoints(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule",
                                reason: UploadReason) -> List[Dict[str, Any]]:
