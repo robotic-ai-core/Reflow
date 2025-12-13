@@ -20,10 +20,11 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 import sys
 import logging
-import os
 import yaml
 
 from lightning.pytorch import Trainer, LightningModule
+
+from lightning_reflow.utils.checkpoint.checkpoint_utils import create_checkpoint_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -145,21 +146,24 @@ class ConfigEmbeddingMixin:
                 ) from e
 
         metadata = checkpoint.get(metadata_key, {})
-        
-        # Add basic metadata (these are our custom metadata for resume)
-        metadata.update({
-            'timestamp': time.time(),
+
+        # Get W&B run ID if available
+        wandb_run_id = self._get_wandb_run_id()
+
+        # Build extra fields for this checkpoint type
+        extra_fields = {
             'original_command': self._original_argv,
             'checkpoint_version': '1.0.0',
-            'global_step': trainer.global_step,
-            'current_epoch': trainer.current_epoch,
-        })
-        
-        # Add W&B run ID if available (custom metadata for resume)
-        wandb_run_id = self._get_wandb_run_id()
+        }
         if wandb_run_id:
-            metadata['wandb_run_id'] = wandb_run_id
+            extra_fields['wandb_run_id'] = wandb_run_id
             logger.info(f"📋 Storing W&B run ID in checkpoint: {wandb_run_id}")
+
+        # Get base metadata from shared helper and merge with config-specific extras
+        base_metadata = create_checkpoint_metadata(
+            trainer, reason='config_embedding', extra=extra_fields
+        )
+        metadata.update(base_metadata)
         
         metadata['embedded_config_content'] = lightning_config
         metadata['config_hash'] = self._calculate_config_hash(lightning_config)

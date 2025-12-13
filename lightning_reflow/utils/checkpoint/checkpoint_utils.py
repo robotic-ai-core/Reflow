@@ -14,6 +14,52 @@ import torch
 import lightning.pytorch as pl
 
 
+def create_checkpoint_metadata(
+    trainer: "pl.Trainer",
+    reason: str = "manual",
+    include_system_info: bool = False,
+    extra: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Create standardized checkpoint metadata.
+
+    This is a helper function that creates common metadata fields used across
+    checkpoint-saving operations. It consolidates the trainer state extraction
+    and optional system information collection.
+
+    Args:
+        trainer: PyTorch Lightning trainer
+        reason: Reason for checkpoint creation (e.g., "pause", "exception", "manual")
+        include_system_info: Whether to include system info (torch version, cuda, etc.)
+        extra: Additional metadata to merge into the result
+
+    Returns:
+        Dictionary with standardized checkpoint metadata
+    """
+    metadata = {
+        'timestamp': time.time(),
+        'save_reason': reason,
+        'global_step': trainer.global_step,
+        'current_epoch': trainer.current_epoch,
+        'max_epochs': trainer.max_epochs,
+        'max_steps': trainer.max_steps,
+    }
+
+    if include_system_info:
+        metadata.update({
+            'current_working_directory': os.getcwd(),
+            'python_executable': sys.executable,
+            'torch_version': torch.__version__,
+            'cuda_available': torch.cuda.is_available(),
+            'cuda_device_count': torch.cuda.device_count() if torch.cuda.is_available() else 0,
+        })
+
+    if extra:
+        metadata.update(extra)
+
+    return metadata
+
+
 def save_comprehensive_checkpoint(
     trainer: "pl.Trainer", 
     pl_module: "pl.LightningModule", 
@@ -36,30 +82,37 @@ def save_comprehensive_checkpoint(
     """
     # Use trainer's save_checkpoint to get standard Lightning state
     trainer.save_checkpoint(checkpoint_path)
-    
+
     # Load the checkpoint to add our additional state
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-    
-    # Add comprehensive state information
+
+    # Get base metadata from shared helper
+    base_metadata = create_checkpoint_metadata(
+        trainer, reason=reason, include_system_info=True, extra=extra_metadata
+    )
+
+    # Restructure for backwards compatibility with existing checkpoint format
     checkpoint_metadata = {
-        'save_timestamp': time.time(),
-        'save_reason': reason,
-        'current_working_directory': os.getcwd(),
-        'python_executable': sys.executable,
-        'torch_version': torch.__version__,
-        'cuda_available': torch.cuda.is_available(),
-        'cuda_device_count': torch.cuda.device_count() if torch.cuda.is_available() else 0,
+        'save_timestamp': base_metadata['timestamp'],
+        'save_reason': base_metadata['save_reason'],
+        'current_working_directory': base_metadata['current_working_directory'],
+        'python_executable': base_metadata['python_executable'],
+        'torch_version': base_metadata['torch_version'],
+        'cuda_available': base_metadata['cuda_available'],
+        'cuda_device_count': base_metadata['cuda_device_count'],
         'trainer_state': {
-            'current_epoch': trainer.current_epoch,
-            'global_step': trainer.global_step,
-            'max_epochs': trainer.max_epochs,
-            'max_steps': trainer.max_steps,
+            'current_epoch': base_metadata['current_epoch'],
+            'global_step': base_metadata['global_step'],
+            'max_epochs': base_metadata['max_epochs'],
+            'max_steps': base_metadata['max_steps'],
         }
     }
-    
-    # Add extra metadata if provided
-    if extra_metadata:
-        checkpoint_metadata.update(extra_metadata)
+
+    # Merge any extra fields from base_metadata that weren't used above
+    for key, value in base_metadata.items():
+        if key not in checkpoint_metadata and key not in checkpoint_metadata.get('trainer_state', {}):
+            if key not in ('timestamp', 'current_epoch', 'global_step', 'max_epochs', 'max_steps'):
+                checkpoint_metadata[key] = value
     
     # Store under a standard key
     checkpoint['diffusion_flow_checkpoint_metadata'] = checkpoint_metadata
