@@ -180,6 +180,8 @@ class LightningReflow:
             logger.error(f"Traceback:\n{traceback.format_exc()}")
             raise
         finally:
+            # CRITICAL: Clean up DataLoader workers to prevent thread accumulation
+            self._cleanup_dataloader_workers()
             # Cleanup resume strategies
             self._cleanup_strategies()
     
@@ -625,15 +627,35 @@ class LightningReflow:
                 import traceback
                 traceback.print_exc()
             
+            # CRITICAL: Recursively instantiate any nested class_path configurations
+            # This handles cases where model_args contains nested models (e.g., dynamics_model)
+            # that are specified as class_path dicts and need to be instantiated into objects.
+            # This is essential for HPO where search space returns instances that may override
+            # YAML-based class_path configs.
+            try:
+                from ..utils.config import instantiate_class_path_recursive, should_instantiate_nested_configs
+
+                if should_instantiate_nested_configs(model_args):
+                    logger.info("Detected nested class_path configs - performing recursive instantiation")
+                    original_keys = list(model_args.keys())
+                    model_args = instantiate_class_path_recursive(model_args, parent_key="model_args")
+                    logger.info(f"Recursive instantiation complete for: {original_keys}")
+            except ImportError as e:
+                logger.warning(f"Could not import instantiate_class_path_recursive: {e}")
+            except Exception as e:
+                logger.warning(f"Recursive instantiation failed: {e}, continuing with existing model_args")
+                import traceback
+                traceback.print_exc()
+
             logger.info(f"Creating model: {self.model_class.__name__} with args: {list(model_args.keys()) if model_args else 'EMPTY'}")
-            
+
             # Debug logging for troubleshooting
             if not model_args:
                 logger.error("❌ CRITICAL: Model args are empty! This will cause process_sampler=None error")
                 logger.error("   Config sections available: %s", list(self.config.keys()) if self.config else "No config")
                 if config_model_section:
                     logger.error("   Model section keys: %s", list(config_model_section.keys()))
-            
+
             return self.model_class(**model_args)
         
         else:
@@ -896,10 +918,34 @@ class LightningReflow:
                 strategy.cleanup()
             except Exception as e:
                 logger.warning(f"Error cleaning up strategy {strategy.__class__.__name__}: {e}")
-    
+
+    def _cleanup_dataloader_workers(self) -> None:
+        """
+        Clean up DataLoader workers to prevent thread accumulation.
+
+        This is critical for HPO scenarios where multiple trials run sequentially.
+        DataLoader workers (QueueFeederThread, _pin_memory_loop) can accumulate
+        across trials if not explicitly terminated.
+
+        This method delegates to the canonical cleanup utility in utils.cleanup_utils.
+        """
+        from ..utils import cleanup_dataloader_workers
+
+        # Get trainer and datamodule references
+        trainer = self.trainer if hasattr(self, 'trainer') else None
+        datamodule = self.datamodule if hasattr(self, 'datamodule') else None
+
+        # Use canonical cleanup implementation
+        cleanup_dataloader_workers(
+            trainer=trainer,
+            datamodule=datamodule,
+            verbose=False  # Keep existing debug-level logging
+        )
+
     def __del__(self):
         """Cleanup on object destruction."""
         try:
+            self._cleanup_dataloader_workers()
             self._cleanup_strategies()
         except Exception:
             pass 

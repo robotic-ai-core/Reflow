@@ -90,7 +90,11 @@ class MemoryCleanupCallback(BaseReflowCallback):
             
         if self.verbose:
             print(f"[MemoryCleanup] Performing cleanup at {hook_name}")
-            
+
+        # DataLoader worker cleanup (critical for HPO scenarios)
+        if hook_name == "on_fit_end" and trainer:
+            self._cleanup_dataloader_workers(trainer)
+
         # CUDA cache cleanup
         if self.cuda_empty_cache and torch.cuda.is_available():
             if self.verbose:
@@ -131,3 +135,25 @@ class MemoryCleanupCallback(BaseReflowCallback):
             collected = gc.collect()
             if self.verbose:
                 print(f"[MemoryCleanup] Garbage collected {collected} objects")
+
+    def _cleanup_dataloader_workers(self, trainer):
+        """
+        Clean up DataLoader workers to prevent thread accumulation.
+
+        This is critical for HPO scenarios where multiple trials run sequentially.
+        DataLoader workers (QueueFeederThread, _pin_memory_loop) can accumulate
+        across trials if not explicitly terminated.
+
+        This method delegates to the canonical cleanup utility in utils.cleanup_utils.
+        """
+        from ...utils import cleanup_dataloader_workers
+
+        # Get datamodule from trainer
+        datamodule = trainer.datamodule if hasattr(trainer, 'datamodule') else None
+
+        # Use canonical cleanup implementation
+        cleanup_dataloader_workers(
+            trainer=trainer,
+            datamodule=datamodule,
+            verbose=self.verbose  # Pass through verbose setting
+        )
