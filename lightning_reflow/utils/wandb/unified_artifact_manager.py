@@ -111,15 +111,12 @@ class UnifiedArtifactManager:
                 if self.verbose and trainer.is_global_zero:
                     self.logger.info(f"Adding {local_path} to {artifact_name}")
                 artifact.add_file(local_path, artifact_path)
-            
-            # Upload with aliases
-            if aliases:
-                artifact.aliases = aliases
-            
+
             if self.verbose and trainer.is_global_zero:
                 self.logger.info(f"Uploading {artifact_name} artifact...")
-            
-            artifact_path = wandb_run.log_artifact(artifact)
+
+            # Pass aliases to log_artifact (not as property - causes error in newer W&B)
+            artifact_path = wandb_run.log_artifact(artifact, aliases=aliases or [])
             
             # Construct full artifact reference for resuming
             entity = getattr(wandb_run, 'entity', 'unknown')
