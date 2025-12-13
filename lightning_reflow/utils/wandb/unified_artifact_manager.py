@@ -121,10 +121,18 @@ class UnifiedArtifactManager:
             
             artifact_path = wandb_run.log_artifact(artifact)
             
+            # Construct full artifact reference for resuming
+            entity = getattr(wandb_run, 'entity', 'unknown')
+            project = getattr(wandb_run, 'project', 'unknown')
+            # artifact_path from log_artifact is the logged artifact object
+            artifact_version = getattr(artifact_path, 'version', 'latest') if artifact_path else 'latest'
+            full_artifact_path = f"{entity}/{project}/{artifact_name}:{artifact_version}"
+
             if self.verbose and trainer.is_global_zero:
-                self.logger.info(f"Successfully uploaded {artifact_name} artifact: {artifact_path}")
-            
-            return artifact_path
+                self.logger.info(f"Successfully uploaded {artifact_name} artifact")
+                self.logger.info(f"Full artifact reference: {full_artifact_path}")
+
+            return full_artifact_path
             
         except Exception as e:
             if self.verbose and trainer.is_global_zero:
@@ -356,8 +364,60 @@ class UnifiedArtifactManager:
             "current_epoch": trainer.current_epoch,
             "global_step": trainer.global_step,
         }
-        
+
         if extra_metadata:
             metadata.update(extra_metadata)
-        
+
         return metadata
+
+    def extract_score_from_trainer(
+        self,
+        trainer: Trainer,
+        metric_name: Optional[str] = None
+    ) -> Optional[float]:
+        """
+        Extract score/metric value from trainer.
+
+        Args:
+            trainer: Lightning trainer instance
+            metric_name: Name of metric to extract
+
+        Returns:
+            Metric value if found, None otherwise
+        """
+        if not metric_name:
+            return None
+
+        try:
+            metric_val = trainer.callback_metrics.get(metric_name)
+            if metric_val is not None:
+                return metric_val.item() if isinstance(metric_val, torch.Tensor) else float(metric_val)
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def get_wandb_run_id(trainer: Trainer = None) -> Optional[str]:
+        """
+        Get current W&B run ID.
+
+        Args:
+            trainer: Optional trainer to extract run from
+
+        Returns:
+            W&B run ID if available, None otherwise
+        """
+        try:
+            # Try to get from trainer first
+            if trainer:
+                run = UnifiedArtifactManager.get_wandb_run(trainer)
+                if run and run.id:
+                    return run.id
+
+            # Fallback to global wandb run
+            if wandb.run and wandb.run.id:
+                return wandb.run.id
+
+        except Exception:
+            pass
+        return None
