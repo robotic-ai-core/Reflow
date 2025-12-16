@@ -182,7 +182,7 @@ class WandbArtifactCheckpoint(pl.Callback):
     
     # ============= Main Upload Logic (Consolidated) =============
     
-    def _upload_checkpoints(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", 
+    def _upload_checkpoints(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule",
                           reason: UploadReason) -> None:
         """
         Main checkpoint upload method - consolidates all upload logic.
@@ -190,9 +190,10 @@ class WandbArtifactCheckpoint(pl.Callback):
         # Check prerequisites
         if not self._can_upload(trainer, reason):
             return
-        
+
         uploaded_artifacts = []
-        
+        emergency_checkpoint_path = None
+
         # Handle different upload patterns
         if self.config.upload_all_checkpoints:
             uploaded_artifacts = self._upload_all_checkpoints(trainer, pl_module, reason)
@@ -208,10 +209,13 @@ class WandbArtifactCheckpoint(pl.Callback):
                 )
                 if artifact:
                     uploaded_artifacts.append(artifact)
-            
+
             # Upload last/latest model
             if self.config.upload_last_model:
                 last_path = self._get_last_checkpoint_path(trainer, pl_module, reason)
+                # Track if this is an emergency checkpoint for later cleanup
+                if last_path and "emergency-" in str(last_path):
+                    emergency_checkpoint_path = last_path
                 if last_path and not self._is_duplicate_upload(last_path, uploaded_artifacts):
                     artifact = self._upload_checkpoint(
                         trainer, pl_module,
@@ -222,11 +226,15 @@ class WandbArtifactCheckpoint(pl.Callback):
                     )
                     if artifact:
                         uploaded_artifacts.append(artifact)
-        
+
         # Log results
         if uploaded_artifacts:
             self._log_upload_summary(uploaded_artifacts, reason)
             self.state.has_uploaded = True
+
+            # Cleanup emergency checkpoint after successful upload
+            if emergency_checkpoint_path and self.config.cleanup_emergency_checkpoints:
+                self._cleanup_emergency_checkpoint(emergency_checkpoint_path)
     
     def _upload_periodic_checkpoints(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule",
                                     reason: UploadReason) -> None:
@@ -347,12 +355,13 @@ class WandbArtifactCheckpoint(pl.Callback):
     def _get_last_checkpoint_path(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule",
                                  reason: UploadReason) -> Optional[str]:
         """Get the path to the last/latest checkpoint."""
-        # For exceptions/teardown, potentially create emergency checkpoint
-        if reason in [UploadReason.EXCEPTION, UploadReason.TEARDOWN] and self.config.create_emergency_checkpoints:
+        # Only create emergency checkpoints for actual emergencies (exceptions),
+        # not for normal teardown - this prevents unnecessary disk usage
+        if reason == UploadReason.EXCEPTION and self.config.create_emergency_checkpoints:
             emergency_path = self._create_emergency_checkpoint(trainer, pl_module, reason.value)
             if emergency_path:
                 return emergency_path
-        
+
         # Fall back to last model path
         return self._model_checkpoint_ref.last_model_path if self._model_checkpoint_ref else None
     
@@ -486,6 +495,16 @@ class WandbArtifactCheckpoint(pl.Callback):
             self._log_verbose(trainer, f"Created emergency checkpoint: {result}")
 
         return result
+
+    def _cleanup_emergency_checkpoint(self, checkpoint_path: str) -> None:
+        """Clean up emergency checkpoint after successful upload."""
+        try:
+            path = Path(checkpoint_path)
+            if path.exists() and "emergency-" in path.name:
+                path.unlink()
+                self.logger.info(f"Cleaned up emergency checkpoint: {checkpoint_path}")
+        except Exception as e:
+            self.logger.warning(f"Failed to cleanup emergency checkpoint: {e}")
 
     # ============= Helper Methods =============
     
