@@ -372,7 +372,7 @@ class TestTorchCompileCallback:
 
     def test_compilation_with_different_modes(self):
         """Test compilation with different modes."""
-        for mode in ["default", "reduce-overhead", "max-autotune"]:
+        for mode in ["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"]:
             # Create fresh model for each mode to avoid recompilation issues
             model = TestModel()
 

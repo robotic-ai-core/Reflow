@@ -82,7 +82,9 @@ class TorchCompileCallback(Callback):
 
         Args:
             enabled: Whether compilation is enabled
-            mode: Compilation mode ("default", "reduce-overhead", "max-autotune")
+            mode: Compilation mode ("default", "reduce-overhead", "max-autotune",
+                "max-autotune-no-cudagraphs"). The last option provides max-autotune
+                kernel optimization without CUDA graph overhead, reducing VRAM usage.
             dynamic: Control dynamic shape handling. None (default) defers to torch.compile's
                 mode-specific defaults. True enables dynamic shapes. False requires static shapes
                 (enables CUDA graphs when supported by the mode).
@@ -131,7 +133,7 @@ class TorchCompileCallback(Callback):
 
     def _validate_config(self) -> None:
         """Validate callback configuration."""
-        valid_modes = ["default", "reduce-overhead", "max-autotune"]
+        valid_modes = ["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"]
         if self.mode not in valid_modes:
             raise ValueError(
                 f"Invalid compilation mode: {self.mode}. "
