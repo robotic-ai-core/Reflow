@@ -443,6 +443,41 @@ class TorchCompileCallback(Callback):
             if self.verbose:
                 print("🧹 Cleaned up torch.compile state after exception")
 
+    def _post_checkpoint_cleanup(self) -> None:
+        """
+        Clean up after checkpoint loading to reduce memory fragmentation.
+
+        On resume, checkpoint loading can fragment GPU memory because:
+        1. Optimizer state is loaded (2x model size for AdamW)
+        2. Tensors are allocated in different order than fresh training
+        3. This fragmentation can cause OOM during CUDA graph capture
+
+        This cleanup:
+        - Resets dynamo state (clears any partially-captured graphs)
+        - Clears CUDA cache (consolidates free memory)
+        - Does NOT reset peak memory stats (useful for debugging)
+        """
+        import gc
+
+        # Force Python garbage collection first
+        gc.collect()
+
+        # Reset dynamo compilation state to clear any cached graphs
+        if hasattr(torch, '_dynamo'):
+            torch._dynamo.reset()
+
+        # Clean up CUDA resources
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+
+            # Clear cuBLAS workspaces if available
+            if hasattr(torch._C, '_cuda_clearCublasWorkspaces'):
+                torch._C._cuda_clearCublasWorkspaces()
+
+        if self.verbose:
+            print("🔄 Cleared dynamo state and CUDA cache after checkpoint load")
+
     def _comprehensive_cleanup(self) -> None:
         """
         Comprehensive cleanup strategy for HPO trial isolation.
@@ -518,6 +553,13 @@ class TorchCompileCallback(Callback):
 
         This is primarily for logging/debugging. The actual compilation
         will happen in setup() with the current configuration.
+
+        IMPORTANT: After checkpoint load, we reset dynamo state and clear CUDA cache
+        to prevent memory fragmentation issues. On resume:
+        1. setup() wraps modules with torch.compile (lazy compilation)
+        2. Checkpoint loads model weights + optimizer state
+        3. This hook runs - we clear any partially-captured graphs
+        4. Training starts with clean compilation state
         """
         if "torch_compile_metadata" in checkpoint:
             saved_metadata = checkpoint["torch_compile_metadata"]
@@ -538,6 +580,12 @@ class TorchCompileCallback(Callback):
                         UserWarning,
                         stacklevel=2
                     )
+
+        # Reset dynamo state and clear CUDA cache after checkpoint load
+        # This prevents memory fragmentation from checkpoint loading interfering
+        # with CUDA graph capture during training
+        if self.enabled:
+            self._post_checkpoint_cleanup()
 
     def state_dict(self) -> Dict[str, Any]:
         """Return callback state for checkpointing."""
