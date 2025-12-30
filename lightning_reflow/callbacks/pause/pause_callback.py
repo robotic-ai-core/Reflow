@@ -118,7 +118,73 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
 
     def is_pause_scheduled(self) -> bool:
         return self._state_machine.is_pause_scheduled()
-    
+
+    # =========================================================================
+    # Public API for external callbacks (e.g., EarlyPauseCallback)
+    # =========================================================================
+
+    def request_pause(self, upload: bool = False, reason: str | None = None) -> bool:
+        """
+        Request a pause from an external source.
+
+        The pause will be executed at the next validation boundary. This is the
+        preferred way for other callbacks to trigger a pause (e.g., EarlyPauseCallback).
+
+        Args:
+            upload: Whether to upload checkpoint to W&B after saving
+            reason: Optional reason for logging (e.g., "Early stopping patience exceeded")
+
+        Returns:
+            True if pause was scheduled, False if already scheduled
+        """
+        if self._state_machine.is_pause_scheduled():
+            # Already scheduled - optionally update upload preference
+            if upload and not self._state_machine.is_upload_requested():
+                self._state_machine.toggle_upload()
+            if reason:
+                print(f"🔄 Pause already scheduled: {reason}")
+            return False
+
+        # Schedule the pause
+        self._state_machine.toggle_pause()
+
+        # Set upload preference if requested
+        if upload:
+            self._state_machine.toggle_upload()
+
+        if reason:
+            print(f"🔄 Pause requested: {reason}")
+        else:
+            print("🔄 Pause requested by external callback")
+
+        return True
+
+    def cancel_pause(self) -> bool:
+        """
+        Cancel a scheduled pause if one exists.
+
+        Returns:
+            True if a pause was cancelled, False if no pause was scheduled
+        """
+        if not self._state_machine.is_pause_scheduled():
+            return False
+
+        self._state_machine.reset()
+        print("❌ Pause cancelled")
+        return True
+
+    def is_pause_pending(self) -> bool:
+        """
+        Check if a pause is currently scheduled (alias for is_pause_scheduled).
+
+        This is the preferred public API method name.
+        """
+        return self._state_machine.is_pause_scheduled()
+
+    # =========================================================================
+    # End of public API
+    # =========================================================================
+
     def is_pausing(self) -> bool:
         """Check if pause is currently being executed (for WandbArtifactCheckpoint compatibility)."""
         return self._state_machine.is_pause_scheduled()
