@@ -38,12 +38,12 @@ class TestNumpyCheckpointLoading:
         # Verify checkpoint was saved
         assert checkpoint_path.exists()
 
-        # Register numpy safe globals (simulating what LightningReflowCLI does)
+        # Register safe globals (simulating what LightningReflowCLI does)
         from lightning_reflow.cli.lightning_cli import LightningReflowCLI
 
-        # Create a mock CLI instance to trigger numpy registration
+        # Create a mock CLI instance to trigger safe globals registration
         cli = LightningReflowCLI.__new__(LightningReflowCLI)
-        cli._register_numpy_safe_globals()
+        cli._register_checkpoint_safe_globals()
 
         # Now try to load with weights_only=True (should work with registered globals)
         loaded = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
@@ -148,10 +148,10 @@ class TestNumpyCheckpointLoading:
             try:
                 from lightning_reflow.cli.lightning_cli import LightningReflowCLI
 
-                # The CLI should register numpy globals before trying to load checkpoint
+                # The CLI should register safe globals before trying to load checkpoint
                 # This simulates what happens in __init__ before super().__init__()
                 cli = LightningReflowCLI.__new__(LightningReflowCLI)
-                cli._register_numpy_safe_globals()
+                cli._register_checkpoint_safe_globals()
 
                 # Now verify we can load the checkpoint with weights_only=True
                 loaded = torch.load(checkpoint_path, map_location='cpu', weights_only=True)

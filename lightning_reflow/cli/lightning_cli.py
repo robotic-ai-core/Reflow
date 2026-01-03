@@ -54,10 +54,10 @@ class LightningReflowCLI(LightningCLI):
         self._user_model_class = args[0] if len(args) > 0 else kwargs.get('model_class')
         self._user_datamodule_class = args[1] if len(args) > 1 else kwargs.get('datamodule_class')
 
-        # CRITICAL: Register numpy safe globals BEFORE any checkpoint loading
+        # CRITICAL: Register safe globals BEFORE any checkpoint loading
         # Lightning CLI's _parse_ckpt_path() loads checkpoints with weights_only=True
-        # This must happen before super().__init__() to allow numpy objects in checkpoints
-        self._register_numpy_safe_globals()
+        # This must happen before super().__init__() to allow numpy/torch objects in checkpoints
+        self._register_checkpoint_safe_globals()
 
         # Handle resume command by spawning subprocess with fit command
         if self._is_resume_command():
@@ -206,6 +206,31 @@ class LightningReflowCLI(LightningCLI):
         
         return trainer
 
+    def _parse_ckpt_path(self) -> None:
+        """
+        Override Lightning CLI's checkpoint hyperparameter parsing.
+
+        LightningReflow uses the embedded config (self_contained_metadata) as the
+        authoritative source for model configuration during resume. This approach:
+
+        1. Avoids format mismatches between ConfigMixin and jsonargparse
+        2. Handles complex nested objects (like dynamics_model) correctly
+        3. Prevents partial hparams from overwriting complete config values
+
+        The embedded config is extracted by the resume command and passed via
+        --config, so the full model specification is already available. We skip
+        checkpoint hparam parsing entirely to avoid conflicts.
+
+        Note: This is a deliberate design choice. The embedded config mechanism
+        provides a more robust and complete solution than checkpoint hyperparameters,
+        which are inherently partial (nn.Module instances can't be serialized to hparams).
+        """
+        # Skip checkpoint hparam parsing entirely.
+        # The embedded config (extracted during resume) provides the complete
+        # model configuration including dynamics_model with class_path + init_args.
+        # Merging partial checkpoint hparams would overwrite these with None values.
+        logger.debug("Skipping checkpoint hparam parsing - using embedded config instead")
+
     def _ensure_checkpoint_directories(self) -> None:
         """Ensure checkpoint directories exist for ModelCheckpoint and default root.
 
@@ -312,14 +337,19 @@ class LightningReflowCLI(LightningCLI):
         except Exception as e:
             logger.warning(f"⚠️ Failed to register state managers: {e}")
     
-    def _register_numpy_safe_globals(self) -> None:
+    def _register_checkpoint_safe_globals(self) -> None:
         """
-        Register numpy safe globals for torch.load with weights_only=True.
+        Register safe globals for torch.load with weights_only=True.
 
         MUST be called BEFORE super().__init__() because Lightning CLI's _parse_ckpt_path()
-        loads checkpoints with weights_only=True, which will fail if numpy objects are present.
+        loads checkpoints with weights_only=True, which will fail if numpy or torch
+        version objects are present.
 
-        This is safe for our own checkpoints that may contain numpy arrays/dtypes.
+        Registers:
+        - numpy arrays and dtypes (for checkpoint data)
+        - torch.torch_version.TorchVersion (Lightning stores pytorch version in checkpoints)
+
+        This is safe for our own checkpoints that may contain these objects.
         """
         try:
             import numpy as np
@@ -337,12 +367,17 @@ class LightningReflowCLI(LightningCLI):
                 np.dtype,
             ] + numpy_dtypes
 
+            # Register torch version class - Lightning stores this in checkpoints
+            # as 'pytorch-lightning_version' which uses TorchVersion type
+            if hasattr(torch, 'torch_version') and hasattr(torch.torch_version, 'TorchVersion'):
+                safe_globals.append(torch.torch_version.TorchVersion)
+
             torch.serialization.add_safe_globals(safe_globals)
-            logger.debug(f"✅ Registered {len(safe_globals)} numpy safe globals for checkpoint loading")
+            logger.debug(f"✅ Registered {len(safe_globals)} safe globals for checkpoint loading")
 
         except Exception as e:
             # Don't fail initialization if this doesn't work
-            logger.warning(f"⚠️  Could not register numpy safe globals: {e}")
+            logger.warning(f"⚠️  Could not register safe globals: {e}")
 
     def _is_resume_command(self) -> bool:
         """Check if the command is a resume command."""
