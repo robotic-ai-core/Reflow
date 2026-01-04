@@ -176,8 +176,13 @@ class LightningReflow:
             
         except Exception as e:
             import traceback
-            logger.error(f"❌ Training failed: {e}")
-            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            # TrialPruned is normal HPO behavior, not a failure
+            exception_name = type(e).__name__
+            if exception_name == "TrialPruned":
+                logger.info(f"⏹️  Trial pruned (normal HPO behavior)")
+            else:
+                logger.error(f"❌ Training failed: {e}")
+                logger.error(f"Traceback:\n{traceback.format_exc()}")
             raise
         finally:
             # CRITICAL: Clean up DataLoader workers to prevent thread accumulation

@@ -144,7 +144,12 @@ class WandbArtifactCheckpoint(pl.Callback):
     def on_exception(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", exception: BaseException) -> None:
         """Handle exceptions by uploading emergency checkpoints."""
         if self.config.upload_on_exception:
-            self.logger.warning(f"Training crashed with {type(exception).__name__}: {exception}")
+            # TrialPruned is normal HPO behavior, not a crash
+            exception_name = type(exception).__name__
+            if exception_name == "TrialPruned":
+                self.logger.info(f"Trial pruned (normal HPO behavior)")
+            else:
+                self.logger.warning(f"Training crashed with {exception_name}: {exception}")
             self._upload_checkpoints(trainer, pl_module, UploadReason.EXCEPTION)
     
     @rank_zero_only
