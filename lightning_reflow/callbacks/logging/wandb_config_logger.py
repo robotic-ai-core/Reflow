@@ -4,7 +4,7 @@ Callback to log the full YAML config to Weights & Biases.
 The standard PyTorch Lightning workflow only logs hyperparameters captured via
 `save_hyperparameters()` in the model's `__init__`. This misses:
 - Trainer configuration (max_epochs, gradient_clip_val, precision, etc.)
-- Data configuration (batch_size, sequence_length, augmentation settings)
+- Data configuration (batch_size, context_length, auto_steps, augmentation settings)
 - Callback configurations
 - Nested model configurations (like dynamics_model internals)
 
@@ -208,7 +208,7 @@ class WandbConfigLoggerCallback(pl.Callback):
                 dm = trainer.datamodule
                 dm_hparams = {}
                 # Common datamodule attributes to log
-                for attr in ['batch_size', 'context_length', 'auto_steps', 'val_ar_steps', 'sequence_length', 'num_workers', 'repo_id']:
+                for attr in ['batch_size', 'context_length', 'auto_steps', 'val_ar_steps', 'num_workers', 'repo_id']:
                     if hasattr(dm, attr):
                         dm_hparams[f"datamodule/{attr}"] = getattr(dm, attr)
                 # Also check for hparams
