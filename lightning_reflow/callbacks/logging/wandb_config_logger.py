@@ -208,7 +208,7 @@ class WandbConfigLoggerCallback(pl.Callback):
                 dm = trainer.datamodule
                 dm_hparams = {}
                 # Common datamodule attributes to log
-                for attr in ['batch_size', 'sequence_length', 'num_workers', 'repo_id']:
+                for attr in ['batch_size', 'context_length', 'auto_steps', 'val_ar_steps', 'sequence_length', 'num_workers', 'repo_id']:
                     if hasattr(dm, attr):
                         dm_hparams[f"datamodule/{attr}"] = getattr(dm, attr)
                 # Also check for hparams
