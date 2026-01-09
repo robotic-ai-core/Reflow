@@ -1,45 +1,209 @@
 # LightningReflow
 
-A PyTorch Lightning extension framework providing advanced training capabilities including pause/resume functionality, W&B checkpoint saving, and an enhanced CLI.
+A PyTorch Lightning extension framework providing advanced training capabilities including pause/resume functionality, W&B checkpoint management, debugging utilities, and an enhanced CLI.
 
-Dual progress bars:
+## Features
+
+- **Pause/Resume Training** - Press 'p' to pause training at validation boundaries
+- **W&B Checkpoint Artifacts** - Automatic checkpoint uploads to Weights & Biases
+- **Enhanced CLI** - Resume subcommand for checkpoint/artifact sources
+- **ConfigMixin** - Serialize and reconstruct nn.Module configurations
+- **Debugging Utilities** - Crash-resistant logging, thread monitoring
+- **Monitoring Callbacks** - Gradient norms, config logging, loss recording
+
+## Installation
+
 ```bash
-Global Steps:  15%|██████████▌                                                           | 6395/42150 [03:32<19:45, 30.16it/s, lr-AdamW=0.001000]
-Interval 2 (Steps to Val) - Press 'p' to pause:  52%|███████████████████▏                 | 2181/4215 [00:47<00:44, 45.73it/s, train/loss=0.2049]
-```
-
-Prints out resume options:
-```bash
-✅ Pause checkpoint uploaded to W&B successfully
-✅ Pause checkpoint uploaded to W&B: neiltan/VibeDiffusion/auannr4y-pause:latest
-🔄 Training paused successfully at validation boundary
-
-🔄 Training paused. Resume options:
-📁 Local resume:    python train_lightning.py resume --checkpoint-path pause_checkpoints/upload_epoch=19_step=16860_1757340895.ckpt
-☁️  W&B resume:     python train_lightning.py resume --checkpoint-artifact neiltan/VibeDiffusion/auannr4y-pause:latest
+git clone <repo>
+cd LightningReflow
+pip install -e .
 ```
 
 ## TL;DR (Quickstart)
 
-```bash
-git clone <repo>
-cd external/LightningReflow
-pip install -e .
+### Basic Training with Pause/Resume
+
+```python
+from lightning_reflow import LightningReflowCLI
+
+# Use as drop-in replacement for LightningCLI
+cli = LightningReflowCLI(
+    MyModel,
+    MyDataModule,
+    seed_everything_default=42,
+    run=True,
+)
 ```
+
+```bash
+# Start training
+python train.py fit --config config.yaml
+
+# Resume from pause checkpoint
+python train.py resume --checkpoint-path pause_checkpoints/model.ckpt
+
+# Resume from W&B artifact
+python train.py resume --checkpoint-artifact user/project/artifact:latest
+```
+
+### Using Callbacks Directly
 
 ```python
 import lightning.pytorch as pl
-from lightning_reflow.callbacks import PauseCallback, FlowProgressBarCallback
+from lightning_reflow.callbacks import (
+    PauseCallback,
+    FlowProgressBarCallback,
+    GradientNormMonitorCallback,
+    WandbConfigLoggerCallback,
+)
 
 trainer = pl.Trainer(
     callbacks=[
         PauseCallback(checkpoint_dir="checkpoints", enable_pause=True),
-        FlowProgressBarCallback()
+        FlowProgressBarCallback(),
+        GradientNormMonitorCallback(log_every_n_steps=10),
+        WandbConfigLoggerCallback(flatten=True),
     ]
 )
 trainer.fit(model, datamodule)
 ```
 
+## Dual Progress Bars
+
+```bash
+Global Steps:  15%|██████████▌                                | 6395/42150 [03:32<19:45, 30.16it/s, lr=0.001]
+Interval 2 - Press 'p' to pause:  52%|███████████████████▏     | 2181/4215 [00:47<00:44, train/loss=0.2049]
+```
+
+## Pause/Resume Output
+
+```bash
+Pause checkpoint uploaded to W&B: user/project/run-pause:latest
+Training paused successfully at validation boundary
+
+Training paused. Resume options:
+  Local resume:  python train.py resume --checkpoint-path pause_checkpoints/epoch=19_step=16860.ckpt
+  W&B resume:    python train.py resume --checkpoint-artifact user/project/run-pause:latest
+```
+
+---
+
+## Callbacks Reference
+
+### PauseCallback
+
+Enables pause/resume functionality during training.
+
+```python
+from lightning_reflow.callbacks import PauseCallback
+
+PauseCallback(
+    checkpoint_dir="pause_checkpoints",
+    enable_pause=True,
+    pause_key="p",
+    upload_key="w",  # Manual W&B upload
+)
+```
+
+### GradientNormMonitorCallback
+
+Monitors gradient norms and detects clipping events.
+
+```python
+from lightning_reflow.callbacks import GradientNormMonitorCallback
+
+GradientNormMonitorCallback(
+    log_every_n_steps=10,
+    norm_type=2.0,
+)
+```
+
+**Logged Metrics:**
+- `grad/total_norm` - Total gradient norm across all parameters
+- `grad/max_norm` - Maximum gradient norm for any parameter
+- `grad/clipped` - Whether gradients were clipped this step
+
+### WandbConfigLoggerCallback
+
+Logs full YAML configuration to W&B experiment config.
+
+```python
+from lightning_reflow.callbacks import WandbConfigLoggerCallback
+
+WandbConfigLoggerCallback(flatten=True)  # Flatten nested config for W&B UI
+```
+
+### LossRecorderCallback
+
+Records training losses to JSON for bit-exactness testing.
+
+```python
+from lightning_reflow.callbacks import LossRecorderCallback
+
+LossRecorderCallback(
+    output_path="losses.json",
+    record_interval=100,  # Record every 100 steps
+    max_steps=1000,
+)
+```
+
+**Output Format:**
+```json
+{"steps": [100, 200, 300], "losses": [0.123, 0.456, 0.789]}
+```
+
+---
+
+## Debugging Utilities
+
+### CrashResistantLogger
+
+Captures all output in a rolling buffer with frequent flushing to survive crashes.
+
+```python
+from lightning_reflow.utils.debugging import CrashResistantLogger, setup_crash_resistant_logging
+
+# Quick setup
+logger = setup_crash_resistant_logging(
+    log_dir="/tmp/crash_logs",
+    prefix="training",
+    max_buffer_lines=1000,
+    auto_start=True,
+)
+
+# Or use as context manager
+with CrashResistantLogger(log_dir="/tmp/logs", max_buffer_lines=500) as logger:
+    # All print() statements are now captured
+    print("Training started...")
+    # If crash occurs, last 500 lines are preserved
+```
+
+**Output Files:**
+- `training_<timestamp>_full.log` - Complete output (can grow large)
+- `training_<timestamp>_last_1000.log` - Circular buffer (last N lines)
+- `training_<timestamp>_metadata.txt` - Run metadata (PID, command, etc.)
+
+### ThreadMonitor
+
+Tracks thread count over time and warns on accumulation (useful for debugging resource leaks).
+
+```python
+from lightning_reflow.utils.debugging import ThreadMonitor
+
+# As context manager
+with ThreadMonitor(interval=30, warn_threshold=20) as monitor:
+    # Training code here
+    pass  # Summary printed on exit
+
+# Or manual control
+monitor = ThreadMonitor(interval=30, warn_threshold=10)
+monitor.start(daemon=True)
+# ... training ...
+monitor.print_summary()
+monitor.stop()
+```
+
+---
 
 ## ConfigMixin for Module Serialization
 
@@ -148,8 +312,85 @@ def load_checkpoint(path):
 - `_deserialize_value(value)`: Utility to deserialize nested configs
 - `_import_class(class_path)`: Utility to import class from fully qualified path
 
+---
+
+## YAML Configuration Example
+
+```yaml
+seed_everything: 42
+
+trainer:
+  max_epochs: 2000
+  accelerator: auto
+  precision: "16-mixed"
+  gradient_clip_val: 1.0
+  callbacks:
+    - class_path: lightning_reflow.callbacks.PauseCallback
+      init_args:
+        checkpoint_dir: pause_checkpoints
+        enable_pause: true
+        pause_key: "p"
+    - class_path: lightning_reflow.callbacks.GradientNormMonitorCallback
+      init_args:
+        log_every_n_steps: 10
+    - class_path: lightning_reflow.callbacks.WandbConfigLoggerCallback
+      init_args:
+        flatten: true
+
+model:
+  class_path: myproject.models.MyModel
+  init_args:
+    learning_rate: 1e-4
+
+data:
+  class_path: myproject.data.MyDataModule
+  init_args:
+    batch_size: 32
+```
+
+---
+
+## Integration Example (World Model Training)
+
+Here's a complete example based on the ProtoWorld project:
+
+```python
+# scripts/train_world_model.py
+from lightning_reflow import LightningReflowCLI
+from world_model.models.world_model import WorldModel
+from world_model.data.datamodule import LeRobotDataModule
+
+def main():
+    cli = LightningReflowCLI(
+        WorldModel,
+        LeRobotDataModule,
+        auto_configure_optimizers=False,  # Model configures its own optimizer
+        seed_everything_default=42,
+        subclass_mode_model=True,
+        subclass_mode_data=True,
+        run=True,
+    )
+
+if __name__ == "__main__":
+    main()
+```
+
+```bash
+# Training
+python scripts/train_world_model.py fit --config configs/world_model.yaml
+
+# Resume from pause
+python scripts/train_world_model.py resume --checkpoint-path pause_checkpoints/model.ckpt
+
+# Resume from W&B artifact
+python scripts/train_world_model.py resume --checkpoint-artifact user/project/run-pause:latest
+```
+
+---
+
 ## Notes
 
 - Pause/resume via `PauseCallback`; W&B integration optional
 - CLI offers `resume` subcommand for checkpoint/artifact sources
 - Designed to be minimally invasive: use callbacks or the CLI
+- All callbacks can be configured via YAML or instantiated directly
