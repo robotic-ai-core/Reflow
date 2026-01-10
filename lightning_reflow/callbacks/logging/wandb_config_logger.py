@@ -173,6 +173,16 @@ class WandbConfigLoggerCallback(pl.Callback):
             logger.warning("WandbConfigLoggerCallback: W&B experiment not initialized")
             return
 
+        # Set up x-axis to use trainer/global_step for all metrics
+        # This ensures wandb plots show actual training steps, not wandb's internal step counter
+        try:
+            import wandb
+            wandb.define_metric("trainer/global_step")
+            wandb.define_metric("*", step_metric="trainer/global_step")
+            logger.debug("WandbConfigLoggerCallback: Set trainer/global_step as x-axis metric")
+        except Exception as e:
+            logger.debug(f"Could not set up wandb x-axis metric: {e}")
+
         config_logged = False
 
         # 1. Log CLI config (full YAML config)
