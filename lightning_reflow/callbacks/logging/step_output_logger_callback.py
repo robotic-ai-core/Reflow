@@ -36,8 +36,11 @@ class StepOutputLoggerCallback(pl.Callback):
         on_epoch: bool,
         prog_bar_metrics: List[str],
     ):
-        if not isinstance(outputs, dict):
-            warnings.warn(f"StepOutputLoggerCallback: Expected 'outputs' to be a dict, got {type(outputs)}. Skipping logging for this step.", UserWarning)
+        # Handle tensor outputs (common when training_step returns just the loss)
+        if isinstance(outputs, torch.Tensor):
+            outputs = {"loss": outputs}
+        elif not isinstance(outputs, dict):
+            # Skip non-dict, non-tensor outputs silently
             return
 
         batch_size = extract_batch_size(batch)
