@@ -222,6 +222,22 @@ class TorchCompileCallback(Callback):
                         stacklevel=2
                     )
 
+    def _uses_cudagraphs(self) -> bool:
+        """Check if current configuration uses CUDA graphs."""
+        # CUDA graphs are used when:
+        # 1. mode is "reduce-overhead" or "max-autotune"
+        # 2. AND dynamic=False (or not set, which defaults to static for these modes)
+        # 3. AND triton.cudagraphs is not explicitly disabled
+        if self.mode in ("reduce-overhead", "max-autotune"):
+            # If dynamic is explicitly True, CUDA graphs won't work
+            if self.dynamic is True:
+                return False
+            # Check if cudagraphs is explicitly disabled in inductor_config
+            if self.inductor_config.get("triton.cudagraphs") is False:
+                return False
+            return True
+        return False
+
     def setup(self, trainer: pl.Trainer, pl_module: pl.LightningModule, stage: str) -> None:
         """
         Apply compilation during setup phase (after model is on device).
@@ -309,7 +325,8 @@ class TorchCompileCallback(Callback):
         """
         Compile the entire LightningModule.
 
-        Warning: This compiles forward(), training_step(), validation_step(), etc.
+        This compiles forward(), training_step(), and validation_step() since
+        Lightning calls these methods directly during training/validation.
         Consider compiling specific modules for better debugging.
         """
         if self.verbose:
@@ -320,12 +337,29 @@ class TorchCompileCallback(Callback):
                 stacklevel=2
             )
 
+        compiled_methods = []
         try:
             start_time = time.perf_counter()
 
-            # Compile the entire forward method
-            original_forward = pl_module.forward
-            pl_module.forward = torch.compile(original_forward, **config)
+            # Compile training_step (main training path in Lightning)
+            if hasattr(pl_module, "training_step"):
+                original_training_step = pl_module.training_step
+                pl_module.training_step = torch.compile(original_training_step, **config)
+                compiled_methods.append("training_step")
+
+            # Compile validation_step if it exists and is overridden
+            if hasattr(pl_module, "validation_step"):
+                # Check if it's actually overridden (not just inherited default)
+                if pl_module.__class__.validation_step is not pl.LightningModule.validation_step:
+                    original_validation_step = pl_module.validation_step
+                    pl_module.validation_step = torch.compile(original_validation_step, **config)
+                    compiled_methods.append("validation_step")
+
+            # Compile forward for inference/predict use cases
+            if hasattr(pl_module, "forward"):
+                original_forward = pl_module.forward
+                pl_module.forward = torch.compile(original_forward, **config)
+                compiled_methods.append("forward")
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000
 
@@ -335,7 +369,8 @@ class TorchCompileCallback(Callback):
             self.metadata.compilation_time_ms[module_name] = elapsed_ms
 
             if self.verbose:
-                print(f"✅ Compiled entire model in {elapsed_ms:.1f}ms (mode={config['mode']})")
+                methods_str = ", ".join(compiled_methods)
+                print(f"✅ Compiled {methods_str} in {elapsed_ms:.1f}ms (mode={config['mode']})")
 
         except Exception as e:
             error_info = {
@@ -423,6 +458,47 @@ class TorchCompileCallback(Callback):
             if self.verbose:
                 print(f"⚠️  torch.compile failed for '{module_path}': {e}")
                 print("    Running without compilation for this module.")
+
+    def on_train_batch_start(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        batch: Any,
+        batch_idx: int,
+    ) -> None:
+        """
+        Mark start of training step for CUDA graph management.
+
+        This is required for CUDA graphs to work properly during training.
+        Without this, PyTorch will warn: "Unable to hit fast path of CUDAGraphs
+        because of pending, uninvoked backwards."
+
+        The cudagraph_mark_step_begin() call tells the CUDA graph tree system
+        that a new training step is starting, allowing it to properly manage
+        graph capture and replay.
+        """
+        if not self.enabled:
+            return
+
+        if self._uses_cudagraphs():
+            if hasattr(torch.compiler, "cudagraph_mark_step_begin"):
+                torch.compiler.cudagraph_mark_step_begin()
+
+    def on_validation_batch_start(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        batch: Any,
+        batch_idx: int,
+        dataloader_idx: int = 0,
+    ) -> None:
+        """Mark start of validation step for CUDA graph management."""
+        if not self.enabled:
+            return
+
+        if self._uses_cudagraphs():
+            if hasattr(torch.compiler, "cudagraph_mark_step_begin"):
+                torch.compiler.cudagraph_mark_step_begin()
 
     def on_fit_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         """Clean up compilation state after training completes."""
