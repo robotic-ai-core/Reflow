@@ -144,9 +144,10 @@ tensorboard_logs/
 # MLflow
 mlruns/
 
-# Datasets (usually too large for git)
-data/
-datasets/
+# Datasets (usually too large for git) — root-anchored to avoid excluding
+# source packages like lightning_reflow/data/
+/data/
+/datasets/
 *.csv
 *.tsv
 *.json
