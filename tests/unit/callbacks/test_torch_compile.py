@@ -139,6 +139,22 @@ class TestTorchCompileCallback:
         # Check that nested module was compiled
         assert "encoder.linear" in callback.metadata.compiled_modules
 
+    def test_none_module_skipped(self, model):
+        """None module (e.g., optional augmentation) is skipped gracefully."""
+        model.augmentation = None
+        callback = TorchCompileCallback(
+            enabled=True,
+            target_modules=["encoder", "augmentation"],
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+
+        # encoder should be compiled, augmentation skipped (not an error)
+        assert "encoder" in callback.metadata.compiled_modules
+        assert "augmentation" not in callback.metadata.compiled_modules
+        assert len(callback.metadata.compilation_errors) == 0
+        assert "augmentation" not in callback.metadata.fallback_modules
+
     def test_module_navigation_invalid_path(self, model):
         """Test error handling for invalid module paths."""
         callback = TorchCompileCallback(
@@ -508,6 +524,103 @@ class TestTorchCompileCallback:
         assert decoder_config["mode"] == "default"
         assert decoder_config["backend"] == "inductor"
         assert "dynamic" not in decoder_config  # Inherited None should not be passed
+
+
+class TestTargetMethods:
+    """Tests for target_methods (method-level compilation)."""
+
+    @pytest.fixture
+    def model(self):
+        return TestModel()
+
+    def test_compile_method(self, model):
+        """Test that a method can be compiled by path."""
+        callback = TorchCompileCallback(
+            enabled=True,
+            target_modules=[],
+            target_methods=["forward"],
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+        assert "forward" in callback.metadata.compiled_modules
+
+    def test_compile_method_invalid_path(self, model):
+        """Test error handling for invalid method paths."""
+        callback = TorchCompileCallback(
+            enabled=True,
+            target_modules=[],
+            target_methods=["nonexistent_method"],
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+        assert len(callback.metadata.compilation_errors) > 0
+        assert "nonexistent_method" in callback.metadata.fallback_modules
+
+    def test_compile_method_not_callable(self, model):
+        """Test error when path points to a non-callable."""
+        # loss_fn is an nn.Module (callable), but let's add a non-callable attr
+        model.some_value = 42
+        callback = TorchCompileCallback(
+            enabled=True,
+            target_modules=[],
+            target_methods=["some_value"],
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+        assert len(callback.metadata.compilation_errors) > 0
+
+    def test_compile_method_replaces_on_instance(self, model):
+        """Compiled method should be callable and produce correct results."""
+        original_output = model.forward(torch.randn(1, 10))
+
+        callback = TorchCompileCallback(
+            enabled=True,
+            target_modules=[],
+            target_methods=["forward"],
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+
+        # Method should still be callable
+        compiled_output = model.forward(torch.randn(1, 10))
+        assert compiled_output.shape == original_output.shape
+
+    def test_modules_and_methods_together(self, model):
+        """Both target_modules and target_methods can be used together."""
+        callback = TorchCompileCallback(
+            enabled=True,
+            target_modules=["encoder"],
+            target_methods=["forward"],
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+        assert "encoder" in callback.metadata.compiled_modules
+        assert "forward" in callback.metadata.compiled_modules
+
+    def test_empty_methods_no_whole_model(self):
+        """Empty target_modules + non-empty target_methods should NOT compile whole model."""
+        model = TestModel()
+        callback = TorchCompileCallback(
+            enabled=True,
+            target_modules=[],
+            target_methods=["forward"],
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+        assert "<entire_model>" not in callback.metadata.compiled_modules
+        assert "forward" in callback.metadata.compiled_modules
+
+    def test_state_dict_includes_target_methods(self):
+        callback = TorchCompileCallback(
+            target_methods=["forward", "_compute_loss_impl"],
+        )
+        state = callback.state_dict()
+        assert state["target_methods"] == ["forward", "_compute_loss_impl"]
+
+    def test_load_state_dict_restores_target_methods(self):
+        callback = TorchCompileCallback()
+        callback.load_state_dict({"target_methods": ["my_method"]})
+        assert callback.target_methods == ["my_method"]
 
 
 class TestCompilationMetadata:

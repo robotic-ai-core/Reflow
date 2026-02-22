@@ -72,6 +72,7 @@ class TorchCompileCallback(Callback):
         inductor_config: Optional[Dict[str, Any]] = None,
         dynamo_config: Optional[Dict[str, Any]] = None,
         target_modules: Optional[List[str]] = None,
+        target_methods: Optional[List[str]] = None,
         module_configs: Optional[List[Dict[str, Any]]] = None,
         cleanup_on_fit_end: bool = True,
         cleanup_on_exception: bool = True,
@@ -103,6 +104,9 @@ class TorchCompileCallback(Callback):
                 Example: {"cache_size_limit": 256}
                 Keys use dot notation and are applied via setattr on nested config objects.
             target_modules: List of module paths to compile (empty list = whole model)
+            target_methods: List of method paths to compile (e.g., ["_compute_loss_impl"]).
+                Methods are compiled via torch.compile and replaced on the parent object.
+                Use this to compile a method that spans multiple submodules in one graph.
             module_configs: List of per-module configs (overrides global settings)
             cleanup_on_fit_end: Clean up compilation state after training
             cleanup_on_exception: Clean up compilation state on exception
@@ -119,6 +123,7 @@ class TorchCompileCallback(Callback):
         self.inductor_config = inductor_config or {}
         self.dynamo_config = dynamo_config or {}
         self.target_modules = target_modules or []
+        self.target_methods = target_methods or []
         self.module_configs = module_configs or []
         self.cleanup_on_fit_end = cleanup_on_fit_end
         self.cleanup_on_exception = cleanup_on_exception
@@ -270,7 +275,7 @@ class TorchCompileCallback(Callback):
             self._compile_with_global_config(pl_module)
 
     def _compile_with_global_config(self, pl_module: pl.LightningModule) -> None:
-        """Compile modules using global configuration."""
+        """Compile modules and methods using global configuration."""
         base_config = {"mode": self.mode}
 
         # Only add parameters if explicitly configured (not None)
@@ -286,16 +291,22 @@ class TorchCompileCallback(Callback):
         if self.disable is not None:
             base_config["disable"] = self.disable
 
-        # Check for whole-model compilation
-        if not self.target_modules or self.target_modules == ["."]:
-            self._compile_entire_model(pl_module, base_config)
-        else:
-            # Compile specific modules
+        # Compile modules
+        if self.target_modules and self.target_modules != ["."]:
             for module_path in self.target_modules:
                 if module_path == ".":
                     self._compile_entire_model(pl_module, base_config)
                 else:
                     self._compile_module(pl_module, module_path, base_config)
+        elif not self.target_modules and not self.target_methods:
+            # No modules or methods specified — compile entire model
+            self._compile_entire_model(pl_module, base_config)
+        elif self.target_modules == ["."]:
+            self._compile_entire_model(pl_module, base_config)
+
+        # Compile methods
+        for method_path in self.target_methods:
+            self._compile_method(pl_module, method_path, base_config)
 
     def _compile_with_module_configs(self, pl_module: pl.LightningModule) -> None:
         """Compile modules using per-module configurations."""
@@ -418,6 +429,14 @@ class TorchCompileCallback(Callback):
                     )
                 target_module = getattr(target_module, part)
 
+            # Skip None modules (e.g., optional augmentation not configured)
+            if target_module is None:
+                if self.verbose:
+                    print(
+                        f"⏭️  Skipping '{module_path}': module is None (not configured)"
+                    )
+                return
+
             # Verify it's a module
             if not isinstance(target_module, torch.nn.Module):
                 raise TypeError(
@@ -458,6 +477,83 @@ class TorchCompileCallback(Callback):
             if self.verbose:
                 print(f"⚠️  torch.compile failed for '{module_path}': {e}")
                 print("    Running without compilation for this module.")
+
+    def _compile_method(
+        self,
+        pl_module: pl.LightningModule,
+        method_path: str,
+        config: Dict[str, Any],
+    ) -> None:
+        """
+        Compile a method by dotted path and replace it on the parent object.
+
+        Unlike _compile_module (which compiles nn.Module instances),
+        this compiles a bound method via torch.compile and replaces it
+        as an instance attribute on the parent. This allows compiling a
+        method that spans multiple submodules in one graph.
+
+        Args:
+            pl_module: Parent LightningModule
+            method_path: Dotted path to method (e.g., "_compute_loss_impl")
+            config: Compilation configuration
+        """
+        try:
+            # Navigate to target method
+            target = pl_module
+            parts = method_path.split(".")
+            for part in parts:
+                if not hasattr(target, part):
+                    available_attrs = [
+                        attr for attr in dir(target)
+                        if not attr.startswith("__") and hasattr(target, attr)
+                    ]
+                    raise AttributeError(
+                        f"Method path '{method_path}' invalid: "
+                        f"'{part}' not found in {type(target).__name__}.\n"
+                        f"Available attributes: {', '.join(available_attrs[:10])}"
+                        f"{' ...' if len(available_attrs) > 10 else ''}"
+                    )
+                target = getattr(target, part)
+
+            if not callable(target):
+                raise TypeError(
+                    f"Method path '{method_path}' points to {type(target)}, "
+                    f"which is not callable"
+                )
+
+            # Compile the method
+            start_time = time.perf_counter()
+            compiled = torch.compile(target, **config)
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+            # Replace the method on the parent object
+            parent = pl_module
+            for part in parts[:-1]:
+                parent = getattr(parent, part)
+            setattr(parent, parts[-1], compiled)
+
+            # Record metadata
+            self.metadata.compiled_modules[method_path] = config.copy()
+            self.metadata.compilation_time_ms[method_path] = elapsed_ms
+
+            if self.verbose:
+                print(
+                    f"Compiled method {method_path} in {elapsed_ms:.1f}ms "
+                    f"(mode={config['mode']})"
+                )
+
+        except Exception as e:
+            error_info = {
+                "module": method_path,
+                "error": str(e),
+                "config": config,
+            }
+            self.metadata.compilation_errors.append(error_info)
+            self.metadata.fallback_modules.append(method_path)
+
+            if self.verbose:
+                print(f"torch.compile failed for method '{method_path}': {e}")
+                print("    Running without compilation for this method.")
 
     def on_train_batch_start(
         self,
@@ -613,6 +709,7 @@ class TorchCompileCallback(Callback):
                 "inductor_config": self.inductor_config,
                 "dynamo_config": self.dynamo_config,
                 "target_modules": self.target_modules,
+                "target_methods": self.target_methods,
             },
             "fallback_modules": self.metadata.fallback_modules,
             "errors": self.metadata.compilation_errors,
@@ -676,6 +773,7 @@ class TorchCompileCallback(Callback):
             "inductor_config": self.inductor_config,
             "dynamo_config": self.dynamo_config,
             "target_modules": self.target_modules,
+            "target_methods": self.target_methods,
             "module_configs": self.module_configs,
         }
 
@@ -691,4 +789,5 @@ class TorchCompileCallback(Callback):
         self.inductor_config = state_dict.get("inductor_config", self.inductor_config)
         self.dynamo_config = state_dict.get("dynamo_config", self.dynamo_config)
         self.target_modules = state_dict.get("target_modules", self.target_modules)
+        self.target_methods = state_dict.get("target_methods", self.target_methods)
         self.module_configs = state_dict.get("module_configs", self.module_configs)
