@@ -63,6 +63,7 @@ class WandbCheckpointConfig:
     use_compression: bool = True
     upload_best_last_only_at_end: bool = False
     periodic_upload_pattern: str = "timestamped"  # "timestamped", "best", "last", "both"
+    keep_n_versions: Optional[int] = None  # Delete old artifact versions, keep N most recent
     
     # Emergency handling
     create_emergency_checkpoints: bool = True
@@ -113,7 +114,10 @@ class WandbArtifactCheckpoint(pl.Callback):
         # References to other components
         self._model_checkpoint_ref: Optional[ModelCheckpoint] = None
         self._wandb_run_ref: Optional[wandb.sdk.wandb_run.Run] = None
-        self._wandb_manager = WandbArtifactManager(verbose=self.config.wandb_verbose)
+        self._wandb_manager = WandbArtifactManager(
+            verbose=self.config.wandb_verbose,
+            keep_n_versions=self.config.keep_n_versions,
+        )
         self._upload_helper = CheckpointUploadHelper(self.config)
 
         # Register for state persistence

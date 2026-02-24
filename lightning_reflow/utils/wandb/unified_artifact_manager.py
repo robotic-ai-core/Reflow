@@ -22,19 +22,23 @@ from ..logging.logging_config import get_logger
 class UnifiedArtifactManager:
     """
     Consolidated artifact manager that handles all types of W&B uploads.
-    
+
     This class eliminates duplication between checkpoint and config uploads
     by providing a unified interface for all artifact operations.
     """
-    
-    def __init__(self, verbose: bool = True):
+
+    def __init__(self, verbose: bool = True, keep_n_versions: Optional[int] = None):
         """
         Initialize the unified artifact manager.
-        
+
         Args:
             verbose: Whether to log verbose messages
+            keep_n_versions: If set, delete older artifact versions after upload,
+                keeping only the N most recent. Prevents W&B storage accumulation
+                from periodic checkpoint saves.
         """
         self.verbose = verbose
+        self.keep_n_versions = keep_n_versions
         self.logger = get_logger(__name__)
     
     @staticmethod
@@ -116,18 +120,31 @@ class UnifiedArtifactManager:
                 self.logger.info(f"Uploading {artifact_name} artifact...")
 
             # Pass aliases to log_artifact (not as property - causes error in newer W&B)
-            artifact_path = wandb_run.log_artifact(artifact, aliases=aliases or [])
-            
+            logged_artifact = wandb_run.log_artifact(artifact, aliases=aliases or [])
+
             # Construct full artifact reference for resuming
             entity = getattr(wandb_run, 'entity', 'unknown')
             project = getattr(wandb_run, 'project', 'unknown')
-            # artifact_path from log_artifact is the logged artifact object
-            artifact_version = getattr(artifact_path, 'version', 'latest') if artifact_path else 'latest'
+            # logged_artifact from log_artifact is the logged artifact object
+            artifact_version = getattr(logged_artifact, 'version', 'latest') if logged_artifact else 'latest'
             full_artifact_path = f"{entity}/{project}/{artifact_name}:{artifact_version}"
 
             if self.verbose and trainer.is_global_zero:
                 self.logger.info(f"Successfully uploaded {artifact_name} artifact")
                 self.logger.info(f"Full artifact reference: {full_artifact_path}")
+
+            # Prune old versions to prevent storage accumulation
+            if self.keep_n_versions is not None and self.keep_n_versions >= 1 and artifact_type == "model":
+                # Wait for upload to commit before pruning, so the new version
+                # appears in the version list and won't be accidentally deleted
+                if logged_artifact is not None and hasattr(logged_artifact, 'wait'):
+                    logged_artifact.wait()
+                self._prune_old_versions(
+                    entity=entity,
+                    project=project,
+                    artifact_name=artifact_name,
+                    artifact_type=artifact_type,
+                )
 
             return full_artifact_path
             
@@ -263,6 +280,61 @@ class UnifiedArtifactManager:
             wandb_run=wandb_run
         )
     
+    def _prune_old_versions(
+        self,
+        entity: str,
+        project: str,
+        artifact_name: str,
+        artifact_type: str,
+    ) -> None:
+        """Delete old artifact versions, keeping only the most recent N.
+
+        This runs after each upload to prevent unbounded storage growth from
+        periodic checkpoint saves.  Uses ``wandb.Api`` (REST) which shares
+        the same auth as the active run.
+
+        Safety guarantees:
+        - Versions with aliases (e.g. :latest, :best) are never deleted
+        - The API returns versions newest-first, so ``versions[:keep_n]``
+          always preserves the most recent uploads
+        - Deletion failures are logged but never propagate
+        """
+        try:
+            api = wandb.Api(overrides={"entity": entity, "project": project})
+            collection_path = f"{entity}/{project}/{artifact_name}"
+            # artifacts() returns newest-first (verified empirically)
+            versions = list(
+                api.artifacts(type_name=artifact_type, name=collection_path)
+            )
+            candidates = versions[self.keep_n_versions:]
+            deleted = 0
+            skipped_aliased = 0
+            for v in candidates:
+                # Never delete versions that have aliases — they may be
+                # referenced by :latest, :best, or user-defined aliases
+                if getattr(v, 'aliases', None):
+                    skipped_aliased += 1
+                    continue
+                try:
+                    v.delete()
+                    deleted += 1
+                except Exception as exc:
+                    self.logger.debug(
+                        f"Could not delete {artifact_name}:{v.version}: {exc}"
+                    )
+            if deleted:
+                self.logger.info(
+                    f"Pruned {deleted} old version(s) of {artifact_name}, "
+                    f"keeping {self.keep_n_versions}"
+                )
+            if skipped_aliased:
+                self.logger.debug(
+                    f"Skipped {skipped_aliased} aliased version(s) of {artifact_name}"
+                )
+        except Exception as e:
+            # Pruning is best-effort — never fail the upload
+            self.logger.debug(f"Artifact pruning skipped for {artifact_name}: {e}")
+
     def _validate_files(self, files: Dict[str, str]) -> Dict[str, str]:
         """Validate that all files exist and are not empty."""
         validated_files = {}

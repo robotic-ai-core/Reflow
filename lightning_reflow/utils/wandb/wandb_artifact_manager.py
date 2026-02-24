@@ -29,16 +29,20 @@ class WandbArtifactManager:
     It is maintained for backward compatibility with existing callers.
     """
 
-    def __init__(self, verbose: bool = True):
+    def __init__(self, verbose: bool = True, keep_n_versions: Optional[int] = None):
         """
         Initialize the artifact manager.
 
         Args:
             verbose: Whether to log verbose messages
+            keep_n_versions: If set, delete older artifact versions after upload,
+                keeping only the N most recent.
         """
         self.verbose = verbose
         self.logger = logging.getLogger(__name__)
-        self._unified_manager = UnifiedArtifactManager(verbose=verbose)
+        self._unified_manager = UnifiedArtifactManager(
+            verbose=verbose, keep_n_versions=keep_n_versions
+        )
 
     @staticmethod
     def get_wandb_run(trainer: Trainer) -> Optional[wandb.sdk.wandb_run.Run]:
