@@ -354,5 +354,71 @@ class TestIntegrationWithWandbService:
             assert loaded_checkpoint['epoch'] == 5
 
 
+class TestArtifactNotFoundFallback:
+    """Tests that prepare_resume returns (None, None) when artifact is unavailable."""
+
+    @patch('lightning_reflow.strategies.wandb_artifact_resume_strategy.WandbService')
+    def test_prepare_resume_returns_none_on_download_failure(self, mock_wandb_service_class):
+        """When W&B artifact doesn't exist, prepare_resume returns (None, None)
+        instead of raising, so callers can fall back to a fresh start."""
+        mock_service = Mock()
+        mock_wandb_service_class.return_value = mock_service
+        mock_service.download_artifact.side_effect = RuntimeError(
+            "W&B artifact download failed: artifact membership "
+            "'checkpoint-abc123:latest' not found in 'entity/project'"
+        )
+
+        strategy = WandbArtifactResumeStrategy()
+        checkpoint_path, config = strategy.prepare_resume(
+            resume_source="entity/project/checkpoint-abc123:latest"
+        )
+
+        assert checkpoint_path is None
+        assert config is None
+
+    @patch('lightning_reflow.strategies.wandb_artifact_resume_strategy.WandbService')
+    def test_prepare_resume_returns_none_on_comm_error(self, mock_wandb_service_class):
+        """Network errors during artifact download also return (None, None)."""
+        mock_service = Mock()
+        mock_wandb_service_class.return_value = mock_service
+        mock_service.download_artifact.side_effect = RuntimeError("network timeout")
+
+        strategy = WandbArtifactResumeStrategy()
+        checkpoint_path, config = strategy.prepare_resume(
+            resume_source="entity/project/checkpoint-xyz:latest"
+        )
+
+        assert checkpoint_path is None
+        assert config is None
+
+    @patch('lightning_reflow.strategies.wandb_artifact_resume_strategy.WandbService')
+    def test_prepare_resume_succeeds_when_artifact_exists(self, mock_wandb_service_class):
+        """Verify normal path still works — returns checkpoint when artifact exists."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_service = Mock()
+            mock_wandb_service_class.return_value = mock_service
+
+            artifact_dir = Path(tmpdir) / "artifact"
+            artifact_dir.mkdir()
+            ckpt = artifact_dir / "model.ckpt"
+            ckpt.write_bytes(b"fake checkpoint")
+
+            mock_service.download_artifact.return_value = (
+                artifact_dir,
+                {'name': 'checkpoint-abc', 'version': 'v1',
+                 'entity': 'e', 'project': 'p'},
+            )
+
+            with patch('lightning_reflow.utils.checkpoint.checkpoint_utils.extract_embedded_config') as mock_extract:
+                mock_extract.return_value = None
+                strategy = WandbArtifactResumeStrategy()
+                checkpoint_path, config = strategy.prepare_resume(
+                    resume_source="e/p/checkpoint-abc:v1"
+                )
+
+            assert checkpoint_path is not None
+            assert checkpoint_path.exists()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

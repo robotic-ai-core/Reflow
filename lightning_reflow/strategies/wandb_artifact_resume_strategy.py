@@ -89,36 +89,37 @@ class WandbArtifactResumeStrategy(ResumeStrategy):
                 entity=entity,
                 project=project
             )
-            
+
             # Find the checkpoint file in the downloaded artifact
             checkpoint_path = self._find_checkpoint_in_artifact(download_path)
-            
+
             # Extract embedded config from checkpoint - use Lightning's merged config
             from lightning_reflow.utils.checkpoint.checkpoint_utils import extract_embedded_config
             embedded_config_yaml = extract_embedded_config(str(checkpoint_path))
-            
+
             if embedded_config_yaml:
                 logger.info(f"📄 Found embedded configuration in checkpoint ({len(embedded_config_yaml)} chars)")
                 logger.info("🎯 Using Lightning's original merged config for resume")
             else:
                 logger.info("📄 No embedded configuration found in checkpoint")
-            
+
             # Optionally override with config from W&B run (this path less common with embedded configs)
             if use_wandb_config and not embedded_config_yaml:
                 import yaml
                 wandb_config = self._get_wandb_config(artifact_metadata)
                 if wandb_config:
                     embedded_config_yaml = yaml.dump(wandb_config, default_flow_style=False, sort_keys=False)
-            
+
             logger.info(f"✅ W&B artifact prepared for resumption")
             logger.info(f"   Checkpoint: {checkpoint_path}")
             logger.info(f"   Artifact: {artifact_metadata['name']}:{artifact_metadata['version']}")
-            
+
             return checkpoint_path, embedded_config_yaml
-            
+
         except Exception as e:
-            logger.error(f"Failed to prepare W&B artifact resume: {e}")
-            raise RuntimeError(f"W&B artifact resume preparation failed: {e}")
+            logger.warning(f"W&B artifact not available: {e}")
+            logger.info("Checkpoint artifact not found — caller should fall back to fresh start")
+            return None, None
     
     def _find_checkpoint_in_artifact(self, artifact_path: Path) -> Path:
         """

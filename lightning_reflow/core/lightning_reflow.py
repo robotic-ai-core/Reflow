@@ -307,28 +307,43 @@ class LightningReflow:
                 entity=entity,
                 project=project
             )
-            
+
+            # If no checkpoint available (e.g. artifact not found), fall back
+            # to a fresh fit so auto-retry doesn't crash.
+            if checkpoint_path is None:
+                logger.warning(
+                    "No checkpoint available from resume source — falling back to fresh fit"
+                )
+                self._execute_fit_subprocess(
+                    checkpoint_path=None,
+                    embedded_config_yaml=None,
+                    config_overrides=config_overrides,
+                    wandb_run_id=None,
+                    extra_cli_args=extra_cli_args,
+                )
+                return
+
             # Handle W&B run ID based on three cases:
             # 1. Explicit ID provided: use that ID
             # 2. 'new' (flag without value): force new run, ignore checkpoint's ID
             # 3. None (flag not used): extract from checkpoint
             if wandb_run_id == 'new':
-                logger.info("🆕 Forcing new W&B run (--wandb-run-id flag without value)")
+                logger.info("Forcing new W&B run (--wandb-run-id flag without value)")
                 wandb_run_id = None  # Will create new run
             elif wandb_run_id:
-                logger.info(f"📌 Using explicit W&B run ID: {wandb_run_id}")
+                logger.info(f"Using explicit W&B run ID: {wandb_run_id}")
             else:
                 wandb_run_id = self._extract_wandb_run_id_from_checkpoint(checkpoint_path)
                 if wandb_run_id:
-                    logger.info(f"✅ Extracted W&B run ID from checkpoint: {wandb_run_id}")
-            
-            logger.info(f"🔄 Preparing subprocess resume command")
+                    logger.info(f"Extracted W&B run ID from checkpoint: {wandb_run_id}")
+
+            logger.info(f"Preparing subprocess resume command")
             logger.info(f"   Checkpoint: {checkpoint_path}")
             if wandb_run_id:
                 logger.info(f"   W&B Run ID: {wandb_run_id}")
             else:
                 logger.info("   W&B Run ID: Not found (will create new run)")
-            
+
             # Execute the subprocess
             self._execute_fit_subprocess(
                 checkpoint_path=checkpoint_path,
@@ -337,10 +352,10 @@ class LightningReflow:
                 wandb_run_id=wandb_run_id,
                 extra_cli_args=extra_cli_args
             )
-            
+
         except Exception as e:
             import traceback
-            logger.error(f"❌ CLI resume failed: {e}")
+            logger.error(f"CLI resume failed: {e}")
             logger.error(f"Traceback:\n{traceback.format_exc()}")
             raise
     
@@ -391,13 +406,18 @@ class LightningReflow:
 
     def _execute_fit_subprocess(
         self,
-        checkpoint_path: Union[str, Path],
+        checkpoint_path: Optional[Union[str, Path]],
         embedded_config_yaml: Optional[str],
         config_overrides: Optional[List[Union[str, Path]]] = None,
         wandb_run_id: Optional[str] = None,
         extra_cli_args: Optional[List[str]] = None
     ) -> None:
-        """Execute the fit command in a subprocess."""
+        """Execute the fit command in a subprocess.
+
+        When *checkpoint_path* is ``None`` this acts as a plain ``fit``
+        (fresh start).  This happens when a resume falls back because the
+        checkpoint artifact was not found.
+        """
         import os
         import sys
         import subprocess
@@ -406,46 +426,51 @@ class LightningReflow:
 
         # Extract original command from checkpoint to use the correct training script
         # This is CRITICAL for model/datamodule classes passed as positional args
-        original_cmd = self._extract_original_command(checkpoint_path)
+        original_cmd = (
+            self._extract_original_command(checkpoint_path)
+            if checkpoint_path is not None
+            else None
+        )
 
         if original_cmd and original_cmd[0].endswith('.py'):
             # Use the original training script
             cmd = [sys.executable, original_cmd[0], 'fit']
-            logger.info(f"🔄 Using original training script: {original_cmd[0]}")
+            logger.info(f"Using original training script: {original_cmd[0]}")
         else:
             # Fallback to generic CLI
             cmd = [sys.executable, '-m', 'lightning_reflow.cli', 'fit']
-            logger.warning("⚠️ Original command not found, using generic CLI (may fail if model_class was provided)")
+            if checkpoint_path is not None:
+                logger.warning("Original command not found, using generic CLI (may fail if model_class was provided)")
 
-        
         # Handle embedded config from checkpoint FIRST (preserves --config --ckpt_path order)
         temp_config_path = self._write_temp_config(embedded_config_yaml)
         temp_wandb_config_path = None
-        
+
         try:
             # Add temp config as the BASE config file
             if temp_config_path:
                 cmd.extend(['--config', temp_config_path])
-                logger.info(f"📄 Using Lightning's original merged config from checkpoint as base")
+                logger.info(f"Using Lightning's original merged config from checkpoint as base")
             else:
-                logger.info("📄 No embedded config found in checkpoint, resuming without it.")
-            
+                logger.info("No embedded config found in checkpoint, resuming without it.")
+
             # Configure W&B logger for run resumption if we have a run ID
             # NOTE: This must come BEFORE user overrides so user configs can override W&B settings
             if wandb_run_id:
                 temp_wandb_config_path = self._add_wandb_resume_config(cmd, wandb_run_id, embedded_config_yaml)
             else:
-                logger.info("ℹ️ No W&B run ID specified - will create new W&B run if logger is configured")
+                logger.info("No W&B run ID specified - will create new W&B run if logger is configured")
                 temp_wandb_config_path = None
-            
+
             # Add any user-provided override configs AFTER W&B config so they have higher precedence
             if config_overrides:
                 for config_file in config_overrides:
                     cmd.extend(['--config', str(config_file)])
-                logger.info(f"🔧 Applying override configs with highest precedence: {config_overrides}")
-            
+                logger.info(f"Applying override configs with highest precedence: {config_overrides}")
+
             # Add checkpoint path LAST so it overrides any ckpt_path in configs
-            cmd.extend(['--ckpt_path', str(checkpoint_path)])
+            if checkpoint_path is not None:
+                cmd.extend(['--ckpt_path', str(checkpoint_path)])
             
             # Pass through any additional Lightning CLI arguments
             if extra_cli_args:
