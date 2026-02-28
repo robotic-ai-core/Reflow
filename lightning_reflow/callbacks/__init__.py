@@ -10,6 +10,7 @@ from .monitoring.flow_progress_bar_callback import FlowProgressBarCallback
 from .monitoring.throughput_monitor import ThroughputMonitorCallback
 from .monitoring.gradient_monitor import GradientNormMonitorCallback
 from .monitoring.loss_recorder import LossRecorderCallback
+from .profiler import TrainingProfilerCallback
 from .torch_compile import TorchCompileCallback
 
 __all__ = [
@@ -25,5 +26,6 @@ __all__ = [
     "ThroughputMonitorCallback",
     "GradientNormMonitorCallback",
     "LossRecorderCallback",
+    "TrainingProfilerCallback",
     "TorchCompileCallback",
 ]
