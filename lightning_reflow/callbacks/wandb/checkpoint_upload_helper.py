@@ -57,7 +57,7 @@ class CheckpointUploadHelper:
             aliases.append("crash_recovery")
         elif reason == UploadReason.PAUSE_REQUESTED:
             aliases.append("pause")
-        elif reason in [UploadReason.PERIODIC_VALIDATION, UploadReason.PERIODIC_EPOCH]:
+        elif reason in [UploadReason.PERIODIC_VALIDATION, UploadReason.PERIODIC_EPOCH, UploadReason.PERIODIC_HOURS]:
             aliases.append("periodic")
 
         aliases.append("latest")  # Always mark as latest

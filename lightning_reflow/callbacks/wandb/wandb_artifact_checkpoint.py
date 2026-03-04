@@ -38,6 +38,7 @@ class UploadReason(Enum):
     PAUSE_REQUESTED = "pause_requested"
     PERIODIC_VALIDATION = "periodic_validation"
     PERIODIC_EPOCH = "periodic_epoch"
+    PERIODIC_HOURS = "periodic_hours"
 
 
 @dataclass
@@ -58,6 +59,7 @@ class WandbCheckpointConfig:
     upload_every_n_validation: Optional[int] = None
     upload_every_n_epoch: Optional[int] = None
     upload_periodic_checkpoints: bool = False
+    upload_every_n_hours: Optional[float] = None
     
     # Storage optimization
     use_compression: bool = True
@@ -91,6 +93,7 @@ class UploadState:
     checkpoint_was_loaded: bool = False
     next_checkpoint_epoch: Optional[int] = None
     next_checkpoint_step: Optional[int] = None
+    last_periodic_upload_time: Optional[float] = None
 
 
 class WandbArtifactCheckpoint(pl.Callback):
@@ -188,7 +191,22 @@ class WandbArtifactCheckpoint(pl.Callback):
             return
         
         self._upload_periodic_checkpoints(trainer, pl_module, UploadReason.PERIODIC_EPOCH)
-    
+
+    @rank_zero_only
+    def on_train_batch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule",
+                           outputs, batch, batch_idx) -> None:
+        """Handle time-based periodic checkpoint uploads."""
+        if self.config.upload_every_n_hours is None:
+            return
+
+        if not self._should_upload_periodic_hours():
+            return
+
+        if self._is_pause_context(trainer):
+            return
+
+        self._upload_time_based_checkpoint(trainer, pl_module)
+
     # ============= Main Upload Logic (Consolidated) =============
     
     def _upload_checkpoints(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule",
@@ -489,7 +507,42 @@ class WandbArtifactCheckpoint(pl.Callback):
             return True
         
         return False
-    
+
+    def _should_upload_periodic_hours(self) -> bool:
+        """Check if enough wall-clock time has elapsed for a periodic upload."""
+        if self.config.upload_every_n_hours is None:
+            return False
+
+        reference = self.state.last_periodic_upload_time or self.state.training_start_time
+        if reference is None:
+            return False
+
+        elapsed_hours = (time.time() - reference) / 3600.0
+        return elapsed_hours >= self.config.upload_every_n_hours
+
+    def _upload_time_based_checkpoint(self, trainer: "pl.Trainer",
+                                      pl_module: "pl.LightningModule") -> None:
+        """Upload a time-based periodic checkpoint as ckpt_type='latest'."""
+        if not self._wandb_run_ref or not self._model_checkpoint_ref:
+            return
+
+        last_path = self._model_checkpoint_ref.last_model_path
+        if not last_path or not Path(last_path).exists():
+            return
+
+        score = self._get_current_score(trainer)
+        artifact = self._upload_checkpoint(
+            trainer, pl_module, last_path, "latest", score, UploadReason.PERIODIC_HOURS
+        )
+
+        if artifact:
+            self.state.last_periodic_upload_time = time.time()
+            self._log_verbose(
+                trainer,
+                f"Time-based periodic upload complete "
+                f"(every {self.config.upload_every_n_hours}h): {artifact['artifact']}"
+            )
+
     def _create_emergency_checkpoint(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule",
                                     reason: str) -> Optional[str]:
         """Create an emergency checkpoint with current state."""
@@ -540,6 +593,8 @@ class WandbArtifactCheckpoint(pl.Callback):
             self.logger.info(f"  - Periodic uploads every {self.config.upload_every_n_epoch} epochs")
         if self.config.upload_every_n_validation:
             self.logger.info(f"  - Periodic uploads every {self.config.upload_every_n_validation} validations")
+        if self.config.upload_every_n_hours:
+            self.logger.info(f"  - Time-based uploads every {self.config.upload_every_n_hours} hours")
         if self.config.use_compression:
             self.logger.info(f"  - Compression enabled")
     
