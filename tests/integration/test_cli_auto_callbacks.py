@@ -203,6 +203,90 @@ class TestCLIConfigHandling:
         assert len(callbacks) >= 1
 
 
+class TestWandbArtifactCheckpointAutoInjection:
+    """Test auto-injection of WandbArtifactCheckpoint when W&B logger is active."""
+
+    def test_wandb_artifact_checkpoint_added_with_wandb_logger(self):
+        """WandbArtifactCheckpoint auto-injected when trainer has WandbLogger."""
+        from lightning_reflow.core.shared_config import _ensure_wandb_artifact_checkpoint
+        from lightning_reflow.callbacks.wandb import WandbArtifactCheckpoint
+
+        mock_trainer = Mock()
+        mock_trainer.logger = Mock(spec=["__class__"])
+        mock_trainer.logger.__class__ = type(
+            "WandbLogger", (), {}
+        )
+
+        # Patch isinstance to recognize mock as WandbLogger
+        with patch(
+            "lightning_reflow.core.shared_config.isinstance",
+            side_effect=lambda obj, cls: (
+                cls.__name__ == "WandbLogger"
+                if hasattr(cls, "__name__") and obj is mock_trainer.logger
+                else builtins_isinstance(obj, cls)
+            ),
+        ) if False else patch.object(
+            mock_trainer, "logger"
+        ) as patched_logger:
+            # Simpler approach: use real WandbLogger mock
+            pass
+
+        # Use direct approach: mock the isinstance check
+        from lightning.pytorch.loggers import WandbLogger as RealWandbLogger
+
+        mock_trainer.logger = Mock(spec=RealWandbLogger)
+        callbacks = []
+        _ensure_wandb_artifact_checkpoint(callbacks, mock_trainer)
+
+        wandb_cbs = [cb for cb in callbacks if isinstance(cb, WandbArtifactCheckpoint)]
+        assert len(wandb_cbs) == 1
+
+    def test_keep_n_versions_default_is_2(self):
+        """Auto-injected WandbArtifactCheckpoint has keep_n_versions=2."""
+        from lightning_reflow.core.shared_config import _ensure_wandb_artifact_checkpoint
+        from lightning_reflow.callbacks.wandb import WandbArtifactCheckpoint
+        from lightning.pytorch.loggers import WandbLogger as RealWandbLogger
+
+        mock_trainer = Mock()
+        mock_trainer.logger = Mock(spec=RealWandbLogger)
+        callbacks = []
+        _ensure_wandb_artifact_checkpoint(callbacks, mock_trainer)
+
+        wandb_cbs = [cb for cb in callbacks if isinstance(cb, WandbArtifactCheckpoint)]
+        assert len(wandb_cbs) == 1
+        assert wandb_cbs[0].config.keep_n_versions == 2
+
+    def test_not_added_without_wandb_logger(self):
+        """WandbArtifactCheckpoint not injected when no W&B logger."""
+        from lightning_reflow.core.shared_config import _ensure_wandb_artifact_checkpoint
+        from lightning_reflow.callbacks.wandb import WandbArtifactCheckpoint
+
+        mock_trainer = Mock()
+        mock_trainer.logger = Mock()  # Not a WandbLogger
+        callbacks = []
+        _ensure_wandb_artifact_checkpoint(callbacks, mock_trainer)
+
+        wandb_cbs = [cb for cb in callbacks if isinstance(cb, WandbArtifactCheckpoint)]
+        assert len(wandb_cbs) == 0
+
+    def test_not_duplicated_if_already_present(self):
+        """WandbArtifactCheckpoint not duplicated if user already added one."""
+        from lightning_reflow.core.shared_config import _ensure_wandb_artifact_checkpoint
+        from lightning_reflow.callbacks.wandb import WandbArtifactCheckpoint
+        from lightning.pytorch.loggers import WandbLogger as RealWandbLogger
+
+        mock_trainer = Mock()
+        mock_trainer.logger = Mock(spec=RealWandbLogger)
+        existing = WandbArtifactCheckpoint(keep_n_versions=5)
+        callbacks = [existing]
+        _ensure_wandb_artifact_checkpoint(callbacks, mock_trainer)
+
+        wandb_cbs = [cb for cb in callbacks if isinstance(cb, WandbArtifactCheckpoint)]
+        assert len(wandb_cbs) == 1
+        assert wandb_cbs[0] is existing
+        assert wandb_cbs[0].config.keep_n_versions == 5  # User's value preserved
+
+
 class TestEndToEndCLI:
     """Test end-to-end CLI functionality."""
 
@@ -210,15 +294,15 @@ class TestEndToEndCLI:
         """Test that CLI properly calls essential callbacks during fit flow."""
         with patch.object(LightningReflowCLI, '__init__', lambda x: None):
             cli = LightningReflowCLI()
-            
+
             # Mock trainer
             mock_trainer = Mock()
             mock_trainer.callbacks = []
             cli.trainer = mock_trainer
-            
+
             # Call essential callbacks method
             cli._add_essential_callbacks()
-            
+
             # Should have added callbacks
             assert len(cli.trainer.callbacks) >= 1
 

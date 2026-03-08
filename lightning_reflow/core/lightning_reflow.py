@@ -220,9 +220,15 @@ class LightningReflow:
                 **resume_kwargs
             )
             
+            # Guard: strategy returned None (e.g. W&B artifact not found)
+            if checkpoint_path is None:
+                raise FileNotFoundError(
+                    f"Resume source not found: {resume_source}"
+                )
+
             # Store checkpoint path for potential fallback use
             self._resume_checkpoint_path = str(checkpoint_path)
-            
+
             # Merge additional config if available
             if additional_config:
                 logger.info("Loading configuration from checkpoint")
@@ -436,6 +442,11 @@ class LightningReflow:
             # Use the original training script
             cmd = [sys.executable, original_cmd[0], 'fit']
             logger.info(f"Using original training script: {original_cmd[0]}")
+        elif sys.argv[0].endswith('.py') and Path(sys.argv[0]).exists():
+            # Use the script that invoked this process (e.g., train.py)
+            # This preserves sys.path modifications made by the invoking script.
+            cmd = [sys.executable, sys.argv[0], 'fit']
+            logger.info("Resume fallback: using invoking script %s", sys.argv[0])
         else:
             # Fallback to generic CLI
             cmd = [sys.executable, '-m', 'lightning_reflow.cli', 'fit']
@@ -478,9 +489,21 @@ class LightningReflow:
                 logger.info(f"🔧 Passing through additional arguments: {extra_cli_args}")
             
             logger.info(f"🚀 Executing: {' '.join(cmd)}")
-            
+
+            # Propagate the current process's sys.path via PYTHONPATH so that
+            # any path modifications made by the invoking script (e.g.
+            # sys.path.insert(0, project_root)) are available in the subprocess.
+            env = os.environ.copy()
+            existing_pythonpath = env.get("PYTHONPATH", "")
+            extra_paths = os.pathsep.join(p for p in sys.path if p)
+            env["PYTHONPATH"] = (
+                (extra_paths + os.pathsep + existing_pythonpath)
+                if existing_pythonpath
+                else extra_paths
+            )
+
             # Execute the fit command in subprocess
-            result = subprocess.run(cmd, check=True)
+            result = subprocess.run(cmd, check=True, env=env)
             sys.exit(result.returncode)
             
         except subprocess.CalledProcessError as e:

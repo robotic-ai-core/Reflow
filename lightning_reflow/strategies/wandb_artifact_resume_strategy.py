@@ -40,18 +40,21 @@ class WandbArtifactResumeStrategy(ResumeStrategy):
             # - "entity/project/artifact:version"
             # - "artifact:version" (if in context)
             # - "run-id:latest"
-            
+
+            # Reject paths that look like filesystem paths
+            if resume_source.startswith(('/', '.', '~')):
+                return False
+
             # Check for basic artifact patterns
             if ':' in resume_source:
                 return True  # Has version specifier
-            
+
             # Check for entity/project/artifact pattern
             if resume_source.count('/') >= 2:
                 return True
-            
-            # If it contains no filesystem indicators, assume it might be W&B
-            return not ('/' in resume_source and not resume_source.count('/') >= 2)
-            
+
+            return False
+
         except Exception:
             return False
     

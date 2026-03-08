@@ -560,7 +560,7 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
             self._reproducibility_manager.set_references(model=pl_module, trainer=trainer)
 
     def on_load_checkpoint(self, trainer: Trainer, pl_module: LightningModule, checkpoint: Dict[str, Any]) -> None:
-        """Trigger post-restoration hooks for scientific reproducibility."""
+        """Restore manager states and trigger post-restoration hooks."""
         super().on_load_checkpoint(trainer, pl_module, checkpoint)
 
         # Update command printer's argv to reflect current command line when resuming
@@ -570,8 +570,21 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         # Also update mixin's _original_argv for backward compatibility
         self._original_argv = sys.argv.copy()
 
+        # Restore manager states (RNG, DataModule, TrainerConfig, Environment, etc.)
+        metadata = checkpoint.get('pause_callback_metadata', {})
+        manager_states = metadata.get('manager_states', {})
+        if manager_states:
+            from lightning_reflow.utils.checkpoint.manager_state import restore_all_manager_states
+            results = restore_all_manager_states(manager_states)
+            restored = sum(1 for v in results.values() if v)
+            failed = sum(1 for v in results.values() if not v)
+            if failed:
+                print(f"⚠️ Manager state restore: {restored} restored, {failed} failed ({results})")
+            else:
+                print(f"✅ Restored {restored} manager states: {list(results.keys())}")
+
         if self.save_rng_states and hasattr(self, '_reproducibility_manager'):
-            # Update references and trigger post-restoration
+            # Update references and trigger post-restoration (handles torch.compile recompilation)
             self._reproducibility_manager.set_references(model=pl_module, trainer=trainer)
             self._reproducibility_manager.post_restoration_hook()
 

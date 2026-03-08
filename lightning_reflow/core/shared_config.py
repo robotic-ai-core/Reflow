@@ -184,6 +184,7 @@ def _ensure_wandb_artifact_checkpoint(callbacks: List[Callback], trainer) -> Non
                 use_compression=True,  # Save W&B storage
                 upload_best_last_only_at_end=True,  # Storage optimization
                 periodic_upload_pattern="timestamped",  # Most storage efficient
+                keep_n_versions=2,  # Prune old artifact versions (keep best + last)
                 wandb_verbose=False  # Less verbose by default
             )
             callbacks.append(wandb_checkpoint)

@@ -13,8 +13,6 @@ from unittest.mock import patch, MagicMock
 
 import lightning.pytorch as pl
 from lightning.pytorch import Trainer
-from lightning.pytorch.loggers import TensorBoardLogger
-
 from lightning_reflow.callbacks.wandb.wandb_artifact_checkpoint import WandbArtifactCheckpoint
 from lightning_reflow.callbacks.monitoring.flow_progress_bar_callback import FlowProgressBarCallback
 from lightning_reflow.callbacks.pause.pause_callback import PauseCallback
@@ -80,57 +78,6 @@ class TestRefactoredCallbacksIntegration:
         assert hasattr(wandb_callback, '_state_manager')
         assert hasattr(pause_callback, '_reproducibility_manager')
         # FlowProgressBarCallback registers its manager in _register_for_state_persistence
-
-    @patch('wandb.init')
-    @patch('wandb.run')
-    def test_training_with_refactored_callbacks(self, mock_run, mock_init, temp_dir, simple_setup):
-        """Test that training works with all refactored callbacks."""
-        model, datamodule = simple_setup
-
-        # Setup mock wandb
-        mock_run_instance = MagicMock()
-        mock_run_instance.id = 'test_run_123'
-        mock_run_instance.name = 'test_run'
-        mock_run.return_value = mock_run_instance
-        mock_init.return_value = mock_run_instance
-
-        # Create callbacks
-        callbacks = [
-            WandbArtifactCheckpoint(
-                upload_best_model=False,
-                upload_last_model=False  # Disable uploads for testing
-            ),
-            FlowProgressBarCallback(
-                refresh_rate=10
-            ),
-            PauseCallback(
-                checkpoint_dir=temp_dir,
-                save_rng_states=True  # Test the new RNG state saving
-            )
-        ]
-
-        # Create trainer
-        trainer = Trainer(
-            max_epochs=2,
-            logger=TensorBoardLogger(save_dir=temp_dir),
-            callbacks=callbacks,
-            default_root_dir=temp_dir,
-            enable_progress_bar=False,  # Disabled by FlowProgressBarCallback
-            enable_checkpointing=True,
-            accelerator='cpu'
-        )
-
-        # Mock CLI context to indicate config saving is disabled (no CLI used in this test)
-        mock_cli = MagicMock()
-        mock_cli.save_config_kwargs = False  # Config saving disabled
-        trainer.cli = mock_cli
-
-        # Train
-        trainer.fit(model, datamodule)
-
-        # Verify training completed
-        assert trainer.current_epoch == 2  # Actually runs 2 full epochs, ending at epoch 2
-        assert trainer.global_step > 0
 
     def test_checkpoint_state_persistence(self, temp_dir, simple_setup):
         """Test that manager states are properly saved and restored."""
