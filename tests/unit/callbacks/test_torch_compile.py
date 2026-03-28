@@ -623,6 +623,277 @@ class TestTargetMethods:
         assert callback.target_methods == ["my_method"]
 
 
+class NestedModule(nn.Module):
+    """Module with nested submodules for testing dot-separated paths."""
+    def __init__(self):
+        super().__init__()
+        self.blocks = SimpleModule(20, 10)
+        self.head = nn.Linear(10, 5)
+
+    def forward(self, x):
+        return self.head(self.blocks(x))
+
+
+class TestModelWithMethod(pl.LightningModule):
+    """LightningModule with a compilable method and nested modules."""
+    def __init__(self):
+        super().__init__()
+        self.encoder = SimpleModule(10, 20)
+        self.backbone = NestedModule()
+        self.loss_fn = nn.MSELoss()
+        self.augmentation = None  # Optional, not configured
+
+    def forward(self, x):
+        return self.backbone(self.encoder(x))
+
+    def _compute_loss_impl(self, x, y):
+        return self.loss_fn(self.forward(x), y)
+
+    def training_step(self, batch, batch_idx):
+        x, y = batch
+        return self._compute_loss_impl(x, y)
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(), lr=0.001)
+
+
+class TestCompileDict:
+    """Tests for the ``compile`` dict parameter (per-target mode grouping)."""
+
+    @pytest.fixture
+    def model(self):
+        return TestModelWithMethod()
+
+    def test_compile_dict_modules(self, model):
+        """nn.Module targets are compiled with the correct mode."""
+        callback = TorchCompileCallback(
+            enabled=True,
+            compile={
+                "max-autotune": ["encoder"],
+            },
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+        assert "encoder" in callback.metadata.compiled_modules
+        assert callback.metadata.compiled_modules["encoder"]["mode"] == "max-autotune"
+
+    def test_compile_dict_methods(self, model):
+        """Callable/method targets are compiled and replaced."""
+        callback = TorchCompileCallback(
+            enabled=True,
+            compile={
+                "reduce-overhead": ["_compute_loss_impl"],
+            },
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+        assert "_compute_loss_impl" in callback.metadata.compiled_modules
+        assert (
+            callback.metadata.compiled_modules["_compute_loss_impl"]["mode"]
+            == "reduce-overhead"
+        )
+        # Method should still be callable
+        x = torch.randn(1, 10)
+        y = torch.randn(1, 5)
+        loss = model._compute_loss_impl(x, y)
+        assert loss.shape == ()
+
+    def test_compile_dict_mixed_modes(self, model):
+        """Multiple modes can coexist in the same compile dict."""
+        callback = TorchCompileCallback(
+            enabled=True,
+            compile={
+                "max-autotune": ["encoder", "loss_fn"],
+                "reduce-overhead": ["_compute_loss_impl"],
+            },
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+
+        assert callback.metadata.compiled_modules["encoder"]["mode"] == "max-autotune"
+        assert callback.metadata.compiled_modules["loss_fn"]["mode"] == "max-autotune"
+        assert (
+            callback.metadata.compiled_modules["_compute_loss_impl"]["mode"]
+            == "reduce-overhead"
+        )
+
+    def test_compile_dict_nested_path(self, model):
+        """Dot-separated paths resolve correctly."""
+        callback = TorchCompileCallback(
+            enabled=True,
+            compile={
+                "default": ["backbone.blocks"],
+            },
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+        assert "backbone.blocks" in callback.metadata.compiled_modules
+        assert callback.metadata.compiled_modules["backbone.blocks"]["mode"] == "default"
+
+    def test_compile_dict_none_target_skipped(self, model):
+        """None targets are skipped without error."""
+        callback = TorchCompileCallback(
+            enabled=True,
+            compile={
+                "max-autotune": ["encoder", "augmentation"],
+            },
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+        assert "encoder" in callback.metadata.compiled_modules
+        assert "augmentation" not in callback.metadata.compiled_modules
+        assert len(callback.metadata.compilation_errors) == 0
+
+    def test_compile_dict_invalid_path_records_error(self, model):
+        """Invalid paths are recorded as errors without raising."""
+        callback = TorchCompileCallback(
+            enabled=True,
+            compile={
+                "default": ["nonexistent_module"],
+            },
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+        assert len(callback.metadata.compilation_errors) == 1
+        assert "nonexistent_module" in callback.metadata.fallback_modules
+
+    def test_compile_dict_non_callable_records_error(self, model):
+        """Non-callable, non-Module targets are recorded as errors."""
+        model.some_value = 42
+        callback = TorchCompileCallback(
+            enabled=True,
+            compile={
+                "default": ["some_value"],
+            },
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+        assert len(callback.metadata.compilation_errors) == 1
+        assert "some_value" in callback.metadata.fallback_modules
+
+    def test_compile_dict_takes_priority_over_target_modules(self, model):
+        """When both compile and target_modules are specified, compile wins."""
+        callback = TorchCompileCallback(
+            enabled=True,
+            compile={
+                "reduce-overhead": ["encoder"],
+            },
+            # These should be ignored:
+            target_modules=["backbone"],
+            target_methods=["forward"],
+            mode="max-autotune",
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+
+        # Only compile dict targets should be compiled
+        assert "encoder" in callback.metadata.compiled_modules
+        assert callback.metadata.compiled_modules["encoder"]["mode"] == "reduce-overhead"
+        assert "backbone" not in callback.metadata.compiled_modules
+        assert "forward" not in callback.metadata.compiled_modules
+
+    def test_compile_dict_inherits_global_options(self, model):
+        """Global options (dynamic, fullgraph, etc.) are forwarded to compile dict."""
+        callback = TorchCompileCallback(
+            enabled=True,
+            dynamic=False,
+            fullgraph=True,
+            compile={
+                "max-autotune": ["encoder"],
+            },
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+
+        config = callback.metadata.compiled_modules["encoder"]
+        assert config["mode"] == "max-autotune"
+        assert config["dynamic"] is False
+        assert config["fullgraph"] is True
+
+    def test_compile_dict_validates_modes(self):
+        """Invalid modes in compile dict raise ValueError at init."""
+        with pytest.raises(ValueError, match="Invalid compilation mode in compile dict"):
+            TorchCompileCallback(
+                compile={"invalid-mode": ["encoder"]},
+            )
+
+    def test_compile_dict_in_state_dict(self):
+        """compile dict is serialized in state_dict."""
+        compile_spec = {"max-autotune": ["encoder"], "reduce-overhead": ["forward"]}
+        callback = TorchCompileCallback(compile=compile_spec)
+        state = callback.state_dict()
+        assert state["compile"] == compile_spec
+
+    def test_compile_dict_in_load_state_dict(self):
+        """compile dict is restored from state_dict."""
+        callback = TorchCompileCallback()
+        assert callback.compile_dict is None
+
+        compile_spec = {"default": ["encoder"]}
+        callback.load_state_dict({"compile": compile_spec})
+        assert callback.compile_dict == compile_spec
+
+    def test_compile_dict_in_checkpoint_metadata(self, model):
+        """compile dict is saved in checkpoint metadata."""
+        compile_spec = {"max-autotune": ["encoder"]}
+        callback = TorchCompileCallback(
+            compile=compile_spec,
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+
+        checkpoint = {}
+        callback.on_save_checkpoint(None, model, checkpoint)
+
+        metadata = checkpoint["torch_compile_metadata"]
+        assert metadata["compilation_config"]["compile"] == compile_spec
+
+    def test_compile_dict_cudagraphs_detection(self):
+        """_uses_cudagraphs considers modes from compile dict."""
+        # Only default mode in global, no cudagraphs
+        callback = TorchCompileCallback(
+            mode="default",
+            compile={"reduce-overhead": ["encoder"]},
+        )
+        assert callback._uses_cudagraphs() is True
+
+        # Both default, no cudagraphs
+        callback2 = TorchCompileCallback(
+            mode="default",
+            compile={"default": ["encoder"]},
+        )
+        assert callback2._uses_cudagraphs() is False
+
+    def test_legacy_target_modules_still_works(self):
+        """Backward compat: target_modules + mode works when compile is None."""
+        model = TestModel()
+        callback = TorchCompileCallback(
+            enabled=True,
+            mode="max-autotune",
+            target_modules=["encoder", "decoder"],
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+        assert "encoder" in callback.metadata.compiled_modules
+        assert "decoder" in callback.metadata.compiled_modules
+        assert callback.metadata.compiled_modules["encoder"]["mode"] == "max-autotune"
+        assert callback.metadata.compiled_modules["decoder"]["mode"] == "max-autotune"
+
+    def test_compile_dict_empty_targets_list(self, model):
+        """Empty target list for a mode compiles nothing for that mode."""
+        callback = TorchCompileCallback(
+            enabled=True,
+            compile={
+                "max-autotune": [],
+                "reduce-overhead": ["encoder"],
+            },
+            verbose=False,
+        )
+        callback.setup(None, model, "fit")
+        assert len(callback.metadata.compiled_modules) == 1
+        assert "encoder" in callback.metadata.compiled_modules
+
+
 class TestCompilationMetadata:
     """Test suite for CompilationMetadata dataclass."""
 

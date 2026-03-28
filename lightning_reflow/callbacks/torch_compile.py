@@ -74,6 +74,7 @@ class TorchCompileCallback(Callback):
         target_modules: Optional[List[str]] = None,
         target_methods: Optional[List[str]] = None,
         module_configs: Optional[List[Dict[str, Any]]] = None,
+        compile: Optional[Dict[str, List[str]]] = None,
         cleanup_on_fit_end: bool = True,
         cleanup_on_exception: bool = True,
         verbose: bool = True,
@@ -103,11 +104,28 @@ class TorchCompileCallback(Callback):
             dynamo_config: Dict of torch._dynamo.config settings to apply before compilation.
                 Example: {"cache_size_limit": 256}
                 Keys use dot notation and are applied via setattr on nested config objects.
-            target_modules: List of module paths to compile (empty list = whole model)
+            target_modules: List of module paths to compile (empty list = whole model).
+                Ignored when ``compile`` is provided.
             target_methods: List of method paths to compile (e.g., ["_compute_loss_impl"]).
                 Methods are compiled via torch.compile and replaced on the parent object.
                 Use this to compile a method that spans multiple submodules in one graph.
-            module_configs: List of per-module configs (overrides global settings)
+                Ignored when ``compile`` is provided.
+            module_configs: List of per-module configs (overrides global settings).
+                Ignored when ``compile`` is provided.
+            compile: Dict mapping torch.compile mode to list of target paths.
+                Each target is resolved on the LightningModule:
+                - nn.Module targets get compiled via torch.compile(module, mode=mode)
+                - Callable/method targets get replaced with the compiled version
+                - Dot-separated paths supported (e.g., "backbone.blocks")
+                When provided, takes priority over target_modules/target_methods/module_configs.
+                Example::
+
+                    compile:
+                      max-autotune:
+                        - "encoder"
+                        - "augmentation"
+                      reduce-overhead:
+                        - "_compute_loss_impl"
             cleanup_on_fit_end: Clean up compilation state after training
             cleanup_on_exception: Clean up compilation state on exception
             verbose: Print compilation status messages
@@ -125,6 +143,7 @@ class TorchCompileCallback(Callback):
         self.target_modules = target_modules or []
         self.target_methods = target_methods or []
         self.module_configs = module_configs or []
+        self.compile_dict = compile
         self.cleanup_on_fit_end = cleanup_on_fit_end
         self.cleanup_on_exception = cleanup_on_exception
         self.verbose = verbose
@@ -144,6 +163,14 @@ class TorchCompileCallback(Callback):
                 f"Invalid compilation mode: {self.mode}. "
                 f"Must be one of {valid_modes}"
             )
+
+        if self.compile_dict is not None:
+            for compile_mode in self.compile_dict:
+                if compile_mode not in valid_modes:
+                    raise ValueError(
+                        f"Invalid compilation mode in compile dict: {compile_mode}. "
+                        f"Must be one of {valid_modes}"
+                    )
 
     def _apply_inductor_config(self) -> None:
         """
@@ -233,7 +260,14 @@ class TorchCompileCallback(Callback):
         # 1. mode is "reduce-overhead" or "max-autotune"
         # 2. AND dynamic=False (or not set, which defaults to static for these modes)
         # 3. AND triton.cudagraphs is not explicitly disabled
-        if self.mode in ("reduce-overhead", "max-autotune"):
+        cudagraph_modes = ("reduce-overhead", "max-autotune")
+
+        # Check compile dict modes
+        modes_in_use = {self.mode}
+        if self.compile_dict is not None:
+            modes_in_use.update(self.compile_dict.keys())
+
+        if modes_in_use & set(cudagraph_modes):
             # If dynamic is explicitly True, CUDA graphs won't work
             if self.dynamic is True:
                 return False
@@ -267,12 +301,121 @@ class TorchCompileCallback(Callback):
         if self.dynamo_config:
             self._apply_dynamo_config()
 
-        # Use module-specific configs if provided
-        if self.module_configs:
+        # compile dict takes priority over legacy target_modules/target_methods
+        if self.compile_dict is not None:
+            self._compile_with_dict(pl_module)
+        elif self.module_configs:
             self._compile_with_module_configs(pl_module)
         else:
             # Use global config for all target modules
             self._compile_with_global_config(pl_module)
+
+    def _resolve_target(
+        self,
+        pl_module: pl.LightningModule,
+        target_path: str,
+    ) -> object:
+        """Resolve a dotted path on pl_module, returning the target object.
+
+        Args:
+            pl_module: Root LightningModule.
+            target_path: Dot-separated attribute path (e.g., "backbone.blocks").
+
+        Returns:
+            The resolved object.
+
+        Raises:
+            AttributeError: If any segment of the path is not found.
+        """
+        target = pl_module
+        for part in target_path.split("."):
+            if not hasattr(target, part):
+                available_attrs = [
+                    attr for attr in dir(target)
+                    if not attr.startswith("_")
+                ]
+                raise AttributeError(
+                    f"Path '{target_path}' invalid: "
+                    f"'{part}' not found in {type(target).__name__}.\n"
+                    f"Available attributes: {', '.join(available_attrs[:10])}"
+                    f"{' ...' if len(available_attrs) > 10 else ''}"
+                )
+            target = getattr(target, part)
+        return target
+
+    def _compile_target(
+        self,
+        pl_module: pl.LightningModule,
+        target_path: str,
+        config: Dict[str, Any],
+    ) -> None:
+        """Compile a single target by dotted path, auto-detecting module vs method.
+
+        If the target is an nn.Module, compiles it in-place (replaces on parent).
+        If the target is a callable (method/function), compiles and replaces it.
+        If the target is None, skips silently.
+
+        Args:
+            pl_module: Root LightningModule.
+            target_path: Dot-separated path to the target.
+            config: Dict of torch.compile kwargs (mode, dynamic, etc.).
+        """
+        try:
+            target = self._resolve_target(pl_module, target_path)
+
+            # Skip None targets (e.g., optional augmentation not configured)
+            if target is None:
+                if self.verbose:
+                    print(
+                        f"Skipping '{target_path}': target is None (not configured)"
+                    )
+                return
+
+            if isinstance(target, torch.nn.Module):
+                self._compile_module(pl_module, target_path, config)
+            elif callable(target):
+                self._compile_method(pl_module, target_path, config)
+            else:
+                raise TypeError(
+                    f"Path '{target_path}' points to {type(target)}, "
+                    f"which is neither an nn.Module nor callable"
+                )
+        except (AttributeError, TypeError) as e:
+            error_info = {
+                "module": target_path,
+                "error": str(e),
+                "config": config,
+            }
+            self.metadata.compilation_errors.append(error_info)
+            self.metadata.fallback_modules.append(target_path)
+
+            if self.verbose:
+                print(f"torch.compile failed for '{target_path}': {e}")
+                print("    Running without compilation for this target.")
+
+    def _compile_with_dict(self, pl_module: pl.LightningModule) -> None:
+        """Compile targets grouped by mode from the ``compile`` dict.
+
+        Each key is a torch.compile mode, each value is a list of target
+        paths resolved on ``pl_module``.
+        """
+        base_config = {}
+        # Carry forward global compile options (dynamic, fullgraph, etc.)
+        if self.dynamic is not None:
+            base_config["dynamic"] = self.dynamic
+        if self.fullgraph is not None:
+            base_config["fullgraph"] = self.fullgraph
+        if self.backend is not None:
+            base_config["backend"] = self.backend
+        if self.options is not None:
+            base_config["options"] = self.options
+        if self.disable is not None:
+            base_config["disable"] = self.disable
+
+        for compile_mode, targets in self.compile_dict.items():
+            config = {**base_config, "mode": compile_mode}
+            for target_path in targets:
+                self._compile_target(pl_module, target_path, config)
 
     def _compile_with_global_config(self, pl_module: pl.LightningModule) -> None:
         """Compile modules and methods using global configuration."""
@@ -710,6 +853,7 @@ class TorchCompileCallback(Callback):
                 "dynamo_config": self.dynamo_config,
                 "target_modules": self.target_modules,
                 "target_methods": self.target_methods,
+                "compile": self.compile_dict,
             },
             "fallback_modules": self.metadata.fallback_modules,
             "errors": self.metadata.compilation_errors,
@@ -775,6 +919,7 @@ class TorchCompileCallback(Callback):
             "target_modules": self.target_modules,
             "target_methods": self.target_methods,
             "module_configs": self.module_configs,
+            "compile": self.compile_dict,
         }
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
@@ -791,3 +936,4 @@ class TorchCompileCallback(Callback):
         self.target_modules = state_dict.get("target_modules", self.target_modules)
         self.target_methods = state_dict.get("target_methods", self.target_methods)
         self.module_configs = state_dict.get("module_configs", self.module_configs)
+        self.compile_dict = state_dict.get("compile", self.compile_dict)
