@@ -115,7 +115,15 @@ class StepOutputLoggerCallback(pl.Callback):
     ):
         if outputs:
             effective_prefix = "val"
-            if dataloader_idx > 0 and trainer.num_val_dataloaders > 1 :
+            # ``trainer.num_val_dataloaders`` was removed in newer Lightning
+            # versions; fall back to inspecting ``trainer.val_dataloaders``
+            # which is either a single loader, a list, or None.
+            val_dls = getattr(trainer, "val_dataloaders", None)
+            if isinstance(val_dls, (list, tuple)):
+                n_val_dls = len(val_dls)
+            else:
+                n_val_dls = 1 if val_dls is not None else 0
+            if dataloader_idx > 0 and n_val_dls > 1:
                  effective_prefix = f"val_dl_{dataloader_idx}"
 
             self._log_metrics_from_dict(
