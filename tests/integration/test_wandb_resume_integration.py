@@ -21,7 +21,6 @@ from unittest.mock import Mock, patch, MagicMock, call
 from argparse import Namespace
 
 from lightning_reflow.cli.lightning_cli import LightningReflowCLI
-from lightning_reflow.utils.wandb.resume_command_handler import ResumeCommandHandler
 
 
 class TestResumeSubcommandExecution:

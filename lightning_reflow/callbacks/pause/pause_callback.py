@@ -1,5 +1,4 @@
 import time
-import torch
 import warnings
 from pathlib import Path
 from typing import Optional, Any, Dict
@@ -317,48 +316,6 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
     def on_train_end(self, trainer: Trainer, pl_module: LightningModule):
         if self._keyboard_handler:
             self._keyboard_handler.stop_monitoring()
-
-    def on_train_epoch_end(self, trainer: Trainer, pl_module: LightningModule):
-        super().on_train_epoch_end(trainer, pl_module)
-        # DISABLED: Epoch boundary pausing removed for production robustness
-        # Validation boundary pausing is more reliable and sufficient
-        # if self._state_machine.is_pause_scheduled() and not self._debug_hooks_enabled:
-        #     self._execute_epoch_boundary_pause(trainer, pl_module)
-        pass
-            
-    def _execute_epoch_boundary_pause(self, trainer: Trainer, pl_module: LightningModule):
-        should_upload = self._state_machine.is_upload_requested()
-        checkpoint_path = self._get_checkpoint_path(trainer, upload=should_upload)
-        
-        # Save checkpoint normally first
-        self._save_checkpoint(trainer, pl_module, checkpoint_path)
-        
-        # For epoch boundary pauses, we need to manually increment the epoch in the checkpoint
-        # because Lightning hasn't incremented it yet when validation ends
-        try:
-            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-            checkpoint['epoch'] = trainer.current_epoch + 1
-            torch.save(checkpoint, checkpoint_path)
-        except Exception as e:
-            print(f"Warning: Could not update epoch in checkpoint: {e}")
-            
-        # Handle upload and print resume commands with proper error handling
-        artifact_path = None
-        if should_upload:
-            try:
-                artifact_path = self._handle_wandb_upload(trainer, pl_module, str(checkpoint_path))
-            except (ValueError, RuntimeError) as e:
-                print(f"⚠️  Upload failed but pause will continue: {e}")
-                artifact_path = None
-        
-        try:
-            self._print_resume_commands(trainer, str(checkpoint_path), artifact_path)
-        except ValueError as e:
-            print(f"⚠️  Could not generate resume commands: {e}")
-            print(f"💾 Checkpoint saved at: {checkpoint_path}")
-        
-        trainer.should_stop = True
-        self._state_machine.reset()
 
     def _handle_pause_key(self):
         if self._debounce(): return

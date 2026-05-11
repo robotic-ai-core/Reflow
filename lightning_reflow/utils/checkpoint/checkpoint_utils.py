@@ -277,31 +277,6 @@ def extract_wandb_run_id(checkpoint: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def load_and_validate_checkpoint(checkpoint_path: str) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    """
-    Load and validate a checkpoint with comprehensive error handling.
-    
-    Args:
-        checkpoint_path: Path to the checkpoint file
-        
-    Returns:
-        Tuple of (checkpoint_dict, metadata_dict)
-        
-    Raises:
-        ValueError: If checkpoint is invalid
-        FileNotFoundError: If checkpoint file doesn't exist
-    """
-    if not Path(checkpoint_path).exists():
-        raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
-    
-    try:
-        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-        metadata = validate_checkpoint_structure(checkpoint, checkpoint_path)
-        return checkpoint, metadata
-    except Exception as e:
-        raise ValueError(f"Failed to load checkpoint from {checkpoint_path}: {e}")
-
-
 def extract_embedded_config(checkpoint_path: str) -> Optional[str]:
     """
     Extract embedded configuration YAML from a checkpoint.
@@ -355,33 +330,3 @@ def extract_embedded_config(checkpoint_path: str) -> Optional[str]:
         return None
 
 
-def standardize_checkpoint_directory_structure(
-    base_dir: str = "checkpoints",
-    create_subdirs: bool = True
-) -> Dict[str, Path]:
-    """
-    Create and return standardized checkpoint directory structure.
-    
-    Args:
-        base_dir: Base directory for all checkpoints
-        create_subdirs: Whether to create subdirectories
-        
-    Returns:
-        Dictionary mapping checkpoint types to their directories
-    """
-    base_path = Path(base_dir)
-    
-    structure = {
-        'lightning': base_path / 'lightning',      # Standard Lightning checkpoints
-        'pause': base_path / 'pause',              # Pause/exit checkpoints
-        'emergency': base_path / 'emergency',      # Emergency checkpoints
-        'manual': base_path / 'manual',            # Manual checkpoints
-        'wandb_downloads': base_path / 'wandb_downloads',  # Downloaded W&B checkpoints
-    }
-    
-    if create_subdirs:
-        for checkpoint_type, directory in structure.items():
-            directory.mkdir(parents=True, exist_ok=True)
-            print(f"[INFO] Created checkpoint directory: {directory}")
-    
-    return structure
