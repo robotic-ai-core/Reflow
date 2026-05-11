@@ -406,3 +406,103 @@ environment:
         assert len(env_vars) == 0
         assert isinstance(config_files, list)
         assert len(config_files) == 0
+
+
+class TestEnvironmentCallback:
+    """EnvironmentCallback set/teardown semantics and config-source loading."""
+
+    def setup_method(self):
+        self.original_env = os.environ.copy()
+        for key in list(os.environ.keys()):
+            if key.startswith("TEST_ENV_"):
+                del os.environ[key]
+
+    def teardown_method(self):
+        os.environ.clear()
+        os.environ.update(self.original_env)
+
+    def test_callback_sets_and_restores_environment_variables(self):
+        from unittest.mock import Mock
+        import lightning.pytorch as pl
+        from lightning_reflow.callbacks.core.environment_callback import EnvironmentCallback
+
+        test_vars = {"TEST_ENV_VAR1": "value1", "TEST_ENV_VAR2": "123"}
+        callback = EnvironmentCallback(env_vars=test_vars)
+
+        trainer = Mock(spec=pl.Trainer)
+        trainer.global_rank = 0
+        pl_module = Mock(spec=pl.LightningModule)
+
+        callback.setup(trainer, pl_module, "fit")
+        for key, value in test_vars.items():
+            os.environ[key] = str(value)
+
+        assert os.environ.get("TEST_ENV_VAR1") == "value1"
+        assert os.environ.get("TEST_ENV_VAR2") == "123"
+
+        callback.teardown(trainer, pl_module, "fit")
+        for key in test_vars:
+            if key in callback.original_env and callback.original_env[key] is not None:
+                assert os.environ.get(key) == callback.original_env[key]
+            else:
+                assert key not in os.environ
+
+    def test_extract_environment_from_configs_respects_override_order(self, tmp_path):
+        """Later configs in the list override earlier ones."""
+        base_config = {
+            "trainer": {"callbacks": [{
+                "class_path": "lightning_reflow.callbacks.core.environment_callback.EnvironmentCallback",
+                "init_args": {"env_vars": {
+                    "TEST_PRECEDENCE_VAR": "base_value",
+                    "TEST_ONLY_BASE": "base_only",
+                }},
+            }]}
+        }
+        override_config = {
+            "trainer": {"callbacks": [{
+                "class_path": "lightning_reflow.callbacks.core.environment_callback.EnvironmentCallback",
+                "init_args": {"env_vars": {
+                    "TEST_PRECEDENCE_VAR": "override_value",
+                    "TEST_ONLY_OVERRIDE": "override_only",
+                }},
+            }]}
+        }
+        base_file = tmp_path / "base_config.yaml"
+        base_file.write_text(yaml.dump(base_config))
+        override_file = tmp_path / "override_config.yaml"
+        override_file.write_text(yaml.dump(override_config))
+
+        env_vars, _ = EnvironmentManager.extract_environment_from_configs([base_file, override_file])
+        assert env_vars.get("TEST_PRECEDENCE_VAR") == "override_value"
+        assert env_vars.get("TEST_ONLY_BASE") == "base_only"
+        assert env_vars.get("TEST_ONLY_OVERRIDE") == "override_only"
+
+    @pytest.mark.parametrize("env_var,value", [
+        ("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:256,expandable_segments:True"),
+        ("MALLOC_TRIM_THRESHOLD_", "128MB"),
+        ("OMP_NUM_THREADS", "4"),
+    ])
+    def test_callback_handles_critical_runtime_variables(self, env_var, value):
+        from unittest.mock import Mock
+        import lightning.pytorch as pl
+        from lightning_reflow.callbacks.core.environment_callback import EnvironmentCallback
+
+        original_value = os.environ.get(env_var)
+        if env_var in os.environ:
+            del os.environ[env_var]
+
+        callback = EnvironmentCallback(env_vars={env_var: value})
+        trainer = Mock(spec=pl.Trainer)
+        trainer.global_rank = 0
+        pl_module = Mock(spec=pl.LightningModule)
+        try:
+            callback.setup(trainer, pl_module, "fit")
+            assert os.environ.get(env_var) == value
+
+            callback.teardown(trainer, pl_module, "fit")
+            assert env_var not in os.environ
+        finally:
+            if original_value is not None:
+                os.environ[env_var] = original_value
+            elif env_var in os.environ:
+                del os.environ[env_var]
