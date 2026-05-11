@@ -11,13 +11,16 @@ Default behavior:
 """
 
 import gc
+import logging
 from typing import List, Optional
 
 import torch
-from .base_reflow_callback import BaseReflowCallback
+import lightning.pytorch as pl
+
+logger = logging.getLogger(__name__)
 
 
-class MemoryCleanupCallback(BaseReflowCallback):
+class MemoryCleanupCallback(pl.Callback):
     """
     Callback that performs memory cleanup at configurable Lightning hook points.
     
@@ -50,8 +53,8 @@ class MemoryCleanupCallback(BaseReflowCallback):
         aggressive_cleanup: bool = True,
         verbose: bool = False
     ):
-        super().__init__(enable_state_management=False, verbose=verbose)
-        
+        super().__init__()
+
         if cleanup_points is None:
             cleanup_points = ["on_validation_epoch_end"]  # Default to validation cleanup
             

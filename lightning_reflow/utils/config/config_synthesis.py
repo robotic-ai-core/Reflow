@@ -1,8 +1,7 @@
-"""
-Config Synthesis Module for DiffusionFlow
+"""Config synthesis utilities.
 
-This module provides utilities for working with Lightning's auto-generated
-configuration files for checkpoint embedding and resume functionality.
+Helpers for working with Lightning's auto-generated configuration files
+for checkpoint embedding and resume functionality.
 """
 
 import yaml

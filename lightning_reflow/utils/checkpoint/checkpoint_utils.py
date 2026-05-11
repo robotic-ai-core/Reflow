@@ -92,38 +92,16 @@ def validate_checkpoint_structure(checkpoint: Dict[str, Any], checkpoint_path: s
             metadata['epoch'], metadata['global_step'], metadata['pytorch_lightning_version'],
         )
         
-        # Check for enhanced checkpoint metadata from different systems
-        enhanced_features = []
-        
-        # Check for pause/exit system metadata
-        if 'pause_exit_callback_state' in checkpoint:
-            pause_state = checkpoint['pause_exit_callback_state']
-            if 'wandb_run_id' in pause_state:
-                enhanced_features.append(f"W&B run ID: {pause_state['wandb_run_id']}")
-                metadata['wandb_run_id'] = pause_state['wandb_run_id']
-            if 'pause_timestamp' in pause_state:
-                enhanced_features.append("Pause/Exit checkpoint")
-                metadata['checkpoint_type'] = 'pause_exit'
-        
-        # Check for WandbArtifactCheckpoint metadata
-        if 'wandb_artifact_checkpoint_state' in checkpoint:
-            artifact_state = checkpoint['wandb_artifact_checkpoint_state']
-            if 'emergency_reason' in artifact_state:
-                enhanced_features.append(f"Emergency checkpoint ({artifact_state['emergency_reason']})")
-                metadata['checkpoint_type'] = 'emergency'
-                metadata['emergency_reason'] = artifact_state['emergency_reason']
-            if 'wandb_run_id' in artifact_state:
-                enhanced_features.append(f"W&B run ID: {artifact_state['wandb_run_id']}")
-                metadata['wandb_run_id'] = artifact_state['wandb_run_id']
-        
-        # Check for comprehensive metadata
-        if 'diffusion_flow_checkpoint_metadata' in checkpoint:
-            df_metadata = checkpoint['diffusion_flow_checkpoint_metadata']
-            if 'save_reason' in df_metadata:
-                enhanced_features.append(f"DiffusionFlow checkpoint ({df_metadata['save_reason']})")
-                metadata['checkpoint_type'] = 'comprehensive'
-                metadata['save_reason'] = df_metadata['save_reason']
-        
+        # Surface modern PauseCallback metadata if present.
+        enhanced_features: list = []
+        pause_metadata = checkpoint.get('pause_callback_metadata')
+        if isinstance(pause_metadata, dict):
+            if pause_metadata.get('wandb_run_id'):
+                metadata['wandb_run_id'] = pause_metadata['wandb_run_id']
+                enhanced_features.append(f"W&B run ID: {pause_metadata['wandb_run_id']}")
+            if pause_metadata.get('pause_timestamp'):
+                metadata['checkpoint_type'] = 'pause'
+                enhanced_features.append("Pause checkpoint")
         metadata['enhanced_features'] = enhanced_features
         
         if enhanced_features:
@@ -136,77 +114,19 @@ def validate_checkpoint_structure(checkpoint: Dict[str, Any], checkpoint_path: s
 
 
 def extract_wandb_run_id(checkpoint: Dict[str, Any]) -> Optional[str]:
+    """Return the W&B run id from checkpoint metadata, or None.
+
+    Checks the two locations the current library writes:
+    ``self_contained_metadata`` (ConfigEmbeddingMixin) and
+    ``pause_callback_metadata`` (PauseCallback). Top-level ``wandb_run_id``
+    is deliberately not consulted — only trusted metadata blobs.
     """
-    Extract W&B run ID from checkpoint metadata.
-    
-    Searches all known metadata locations for W&B run ID.
-    
-    Args:
-        checkpoint: The loaded checkpoint dictionary
-        
-    Returns:
-        W&B run ID if found, None otherwise
-    """
-    # NOTE: We do NOT check root level 'wandb_run_id' for security reasons.
-    # Only extract from trusted metadata locations to prevent tampering.
-    
-    # Check self_contained_metadata (modern format)
-    if 'self_contained_metadata' in checkpoint:
-        metadata = checkpoint['self_contained_metadata']
-        if 'wandb_run_id' in metadata:
-            run_id = metadata['wandb_run_id']
+    for key in ("self_contained_metadata", "pause_callback_metadata"):
+        metadata = checkpoint.get(key)
+        if isinstance(metadata, dict):
+            run_id = metadata.get("wandb_run_id")
             if isinstance(run_id, str) and run_id.strip():
                 return run_id.strip()
-    
-    # Check current PauseCallback metadata format
-    if 'pause_callback_metadata' in checkpoint:
-        pause_metadata = checkpoint['pause_callback_metadata']
-        if 'wandb_run_id' in pause_metadata:
-            run_id = pause_metadata['wandb_run_id']
-            # Clean whitespace and validate
-            if isinstance(run_id, str) and run_id.strip():
-                return run_id.strip()
-    
-    # Check validation boundary pause metadata
-    if 'validation_boundary_pause_metadata' in checkpoint:
-        vb_pause_state = checkpoint['validation_boundary_pause_metadata']
-        if 'wandb_run_id' in vb_pause_state:
-            run_id = vb_pause_state['wandb_run_id']
-            if isinstance(run_id, str) and run_id.strip():
-                return run_id.strip()
-    
-    # Check pause/exit system metadata (top-level - legacy)
-    if 'pause_exit_callback_state' in checkpoint:
-        pause_state = checkpoint['pause_exit_callback_state']
-        if 'wandb_run_id' in pause_state:
-            run_id = pause_state['wandb_run_id']
-            if isinstance(run_id, str) and run_id.strip():
-                return run_id.strip()
-    
-    # Check WandbArtifactCheckpoint metadata
-    if 'wandb_artifact_checkpoint_state' in checkpoint:
-        artifact_state = checkpoint['wandb_artifact_checkpoint_state']
-        if 'wandb_run_id' in artifact_state:
-            run_id = artifact_state['wandb_run_id']
-            if isinstance(run_id, str) and run_id.strip():
-                return run_id.strip()
-    
-    # Check comprehensive metadata
-    if 'diffusion_flow_checkpoint_metadata' in checkpoint:
-        df_metadata = checkpoint['diffusion_flow_checkpoint_metadata']
-        if 'wandb_run_id' in df_metadata:
-            run_id = df_metadata['wandb_run_id']
-            if isinstance(run_id, str) and run_id.strip():
-                return run_id.strip()
-        
-        # Check pause/exit system metadata nested in comprehensive metadata
-        if 'pause_exit_callback_state' in df_metadata:
-            pause_state = df_metadata['pause_exit_callback_state']
-            if 'wandb_run_id' in pause_state:
-                run_id = pause_state['wandb_run_id']
-                if isinstance(run_id, str) and run_id.strip():
-                    return run_id.strip()
-    
     return None
 
 
@@ -226,27 +146,16 @@ def extract_embedded_config(checkpoint_path: str) -> Optional[str]:
         checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
         logger.debug("Checkpoint keys: %s", list(checkpoint.keys())[:10])
 
-        metadata_locations = [
-            'self_contained_metadata',  # ConfigEmbeddingMixin standard location
-            'pause_callback_metadata',  # PauseCallback metadata
-            'wandb_artifact_checkpoint_metadata',
-            'checkpoint_metadata',
-            'model_checkpoint_metadata',
-        ]
+        # The two metadata blobs the current library writes.
+        for location in ("self_contained_metadata", "pause_callback_metadata"):
+            metadata = checkpoint.get(location)
+            if isinstance(metadata, dict):
+                config_content = metadata.get('embedded_config_content')
+                if config_content:
+                    logger.info("Found embedded config in %s", location)
+                    return config_content
 
-        for location in metadata_locations:
-            if location in checkpoint:
-                metadata = checkpoint[location]
-                if isinstance(metadata, dict) and 'embedded_config_content' in metadata:
-                    config_content = metadata['embedded_config_content']
-                    if config_content:
-                        logger.info("Found embedded config in %s", location)
-                        return config_content
-
-        if 'embedded_config_content' in checkpoint:
-            logger.info("Found embedded config at top level (legacy format)")
-            return checkpoint['embedded_config_content']
-
+        # Lightning's own saved config dict, if a ConfigCallback wrote one.
         if 'lightning_config' in checkpoint:
             logger.info("Found lightning_config (clean checkpoint format)")
             import yaml

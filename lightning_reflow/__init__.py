@@ -16,15 +16,22 @@ from .cli import LightningReflowCLI
 from .models import SimpleReflowModel
 from .data import SimpleDataModule
 
-# Callback imports
+# Callback imports — keep top-level exports aligned with callbacks/__init__.py
 from .callbacks import (
-    PauseCallback,
-    WandbWatchCallback,
     ConfigSummaryLogger,
-    StepOutputLoggerCallback,
-    MemoryCleanupCallback,
     EnvironmentCallback,
     FlowProgressBarCallback,
+    GradientNormMonitorCallback,
+    LossRecorderCallback,
+    MemoryCleanupCallback,
+    PauseCallback,
+    StepOutputLoggerCallback,
+    ThroughputMonitorCallback,
+    TorchCompileCallback,
+    TrainingProfilerCallback,
+    WandbArtifactCheckpoint,
+    WandbConfigLoggerCallback,
+    WandbWatchCallback,
 )
 
 # Utility imports
@@ -35,16 +42,23 @@ __all__ = [
     # Core components
     "LightningReflow",
     "LightningReflowCLI",
-    "SimpleReflowModel", 
+    "SimpleReflowModel",
     "SimpleDataModule",
-    # Callbacks
-    "PauseCallback",
-    "WandbWatchCallback",
+    # Callbacks (mirrors callbacks/__init__.py)
     "ConfigSummaryLogger",
-    "StepOutputLoggerCallback",
-    "MemoryCleanupCallback",
     "EnvironmentCallback",
     "FlowProgressBarCallback",
+    "GradientNormMonitorCallback",
+    "LossRecorderCallback",
+    "MemoryCleanupCallback",
+    "PauseCallback",
+    "StepOutputLoggerCallback",
+    "ThroughputMonitorCallback",
+    "TorchCompileCallback",
+    "TrainingProfilerCallback",
+    "WandbArtifactCheckpoint",
+    "WandbConfigLoggerCallback",
+    "WandbWatchCallback",
     # Utilities
     "get_torch_generator_from_seed",
     "EnvironmentManager",

@@ -361,7 +361,7 @@ class WandbArtifactManager:
         
         # Add standard metadata
         artifact.metadata.update({
-            "created_by": "DiffusionFlow",
+            "created_by": "lightning_reflow",
             "created_timestamp": time.time(),
             "wandb_run_id": wandb_run.id
         })

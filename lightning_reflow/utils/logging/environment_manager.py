@@ -1,12 +1,10 @@
-"""
-Environment Variable Manager for DiffusionFlow
+"""Environment variable manager.
 
-This module provides shared functionality for parsing and setting environment
-variables from config files. It's used by both fresh training (fit) and 
-resume commands to ensure consistent environment setup.
+Shared logic for parsing and applying environment variables from config files.
+Used by both fresh-fit and resume paths so environment setup stays consistent.
 
-Enhanced with manager state persistence for complete environment restoration
-during resume operations.
+Manager-state persistence captures environment variables into checkpoints so
+they can be restored on resume.
 """
 
 import os
