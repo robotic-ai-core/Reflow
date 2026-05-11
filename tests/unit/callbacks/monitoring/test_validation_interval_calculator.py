@@ -345,7 +345,3 @@ class TestCheckpointRestore:
         # 500 // 100 = 5 validations
         assert calculator._validation_count == 5
         assert calculator._last_validation_batch == 500
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

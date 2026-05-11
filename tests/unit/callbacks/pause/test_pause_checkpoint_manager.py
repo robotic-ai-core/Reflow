@@ -358,7 +358,3 @@ class TestPauseCheckpointManagerEdgeCases:
         # All paths should be unique (due to timestamps)
         # Note: if running very fast, some might collide
         assert len(paths) >= 1  # At least some uniqueness
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

@@ -245,7 +245,3 @@ class TestWandbRunIdArgument:
                     
             finally:
                 Path(tmp_ckpt.name).unlink(missing_ok=True)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

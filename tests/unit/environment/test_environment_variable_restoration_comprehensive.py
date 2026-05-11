@@ -406,7 +406,3 @@ environment:
         assert len(env_vars) == 0
         assert isinstance(config_files, list)
         assert len(config_files) == 0
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

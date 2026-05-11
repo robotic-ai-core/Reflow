@@ -9,13 +9,8 @@ import pytest
 import tempfile
 import torch
 import yaml
-import sys
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
-from typing import Dict, Any, Optional
-
-# Add lightning_reflow to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from unittest.mock import Mock, patch
 
 # Test data fixtures
 @pytest.fixture
@@ -121,37 +116,6 @@ def mock_trainer(mock_wandb_logger):
     return trainer
 
 
-@pytest.fixture
-def cli_args_basic():
-    """Basic CLI arguments for testing."""
-    return [
-        'train_lightning.py',
-        'fit',
-        '--model.learning_rate=0.001',
-        '--trainer.max_epochs=2'
-    ]
-
-
-@pytest.fixture
-def cli_args_resume(mock_checkpoint):
-    """Resume CLI arguments for testing."""
-    return [
-        'train_lightning.py',
-        'resume',
-        '--checkpoint-path', mock_checkpoint
-    ]
-
-
-@pytest.fixture
-def cli_args_resume_artifact():
-    """Resume from artifact CLI arguments."""
-    return [
-        'train_lightning.py',
-        'resume',
-        '--checkpoint-artifact', 'entity/project/test-run-123-pause:latest'
-    ]
-
-
 # Mock external dependencies
 @pytest.fixture(autouse=True)
 def mock_wandb():
@@ -182,28 +146,6 @@ def mock_subprocess():
         yield mock_run
 
 
-# Test utilities
-class MockKeyboardInput:
-    """Mock keyboard input for pause callback testing."""
-    
-    def __init__(self, inputs=None):
-        self.inputs = inputs or []
-        self.index = 0
-    
-    def __call__(self, *args, **kwargs):
-        if self.index < len(self.inputs):
-            result = self.inputs[self.index]
-            self.index += 1
-            return result
-        return None
-
-
-@pytest.fixture
-def mock_keyboard_input():
-    """Fixture for mocking keyboard input."""
-    return MockKeyboardInput
-
-
 # Test data generators
 def create_sample_batch(batch_size=4, input_dim=784, output_dim=10, task_type="classification"):
     """Create a sample batch for testing."""
@@ -223,28 +165,3 @@ def sample_batch():
     return create_sample_batch()
 
 
-# Integration test helpers
-@pytest.fixture
-def integration_test_setup(temp_dir, config_file):
-    """Setup for integration tests."""
-    return {
-        'temp_dir': temp_dir,
-        'config_file': config_file,
-        'work_dir': temp_dir / 'work',
-        'checkpoints_dir': temp_dir / 'checkpoints'
-    }
-
-
-# Error simulation fixtures
-@pytest.fixture
-def failing_model():
-    """Model that fails for error testing."""
-    model = Mock()
-    model.side_effect = RuntimeError("Simulated model failure")
-    return model
-
-
-@pytest.fixture
-def network_error():
-    """Simulate network errors for W&B testing."""
-    return ConnectionError("Simulated network failure")

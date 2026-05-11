@@ -481,7 +481,3 @@ class TestThroughputMonitorCallbackImport:
         """Test import from callbacks package."""
         from lightning_reflow.callbacks import ThroughputMonitorCallback
         assert ThroughputMonitorCallback is not None
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

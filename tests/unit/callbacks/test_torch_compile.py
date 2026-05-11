@@ -30,7 +30,7 @@ class SimpleModule(nn.Module):
         return self.linear(x)
 
 
-class TestModel(pl.LightningModule):
+class CompileTestModel(pl.LightningModule):
     """Simple LightningModule for testing."""
     def __init__(self):
         super().__init__()
@@ -73,7 +73,7 @@ class TestTorchCompileCallback:
     @pytest.fixture
     def model(self):
         """Create a test model."""
-        return TestModel()
+        return CompileTestModel()
 
     @pytest.fixture
     def dataloader(self):
@@ -390,7 +390,7 @@ class TestTorchCompileCallback:
         """Test compilation with different modes."""
         for mode in ["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"]:
             # Create fresh model for each mode to avoid recompilation issues
-            model = TestModel()
+            model = CompileTestModel()
 
             callback = TorchCompileCallback(
                 enabled=True,
@@ -531,7 +531,7 @@ class TestTargetMethods:
 
     @pytest.fixture
     def model(self):
-        return TestModel()
+        return CompileTestModel()
 
     def test_compile_method(self, model):
         """Test that a method can be compiled by path."""
@@ -599,7 +599,7 @@ class TestTargetMethods:
 
     def test_empty_methods_no_whole_model(self):
         """Empty target_modules + non-empty target_methods should NOT compile whole model."""
-        model = TestModel()
+        model = CompileTestModel()
         callback = TorchCompileCallback(
             enabled=True,
             target_modules=[],
@@ -634,7 +634,7 @@ class NestedModule(nn.Module):
         return self.head(self.blocks(x))
 
 
-class TestModelWithMethod(pl.LightningModule):
+class CompileTestModelWithMethod(pl.LightningModule):
     """LightningModule with a compilable method and nested modules."""
     def __init__(self):
         super().__init__()
@@ -662,7 +662,7 @@ class TestCompileDict:
 
     @pytest.fixture
     def model(self):
-        return TestModelWithMethod()
+        return CompileTestModelWithMethod()
 
     def test_compile_dict_modules(self, model):
         """nn.Module targets are compiled with the correct mode."""
@@ -866,7 +866,7 @@ class TestCompileDict:
 
     def test_legacy_target_modules_still_works(self):
         """Backward compat: target_modules + mode works when compile is None."""
-        model = TestModel()
+        model = CompileTestModel()
         callback = TorchCompileCallback(
             enabled=True,
             mode="max-autotune",
@@ -932,7 +932,3 @@ class TestCompilationMetadata:
 
         assert len(metadata.compilation_errors) == 1
         assert "encoder" in metadata.fallback_modules
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

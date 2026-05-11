@@ -244,7 +244,3 @@ class TestCompressedCheckpointE2E:
             assert selected_checkpoint == uncompressed_path
             loaded = torch.load(selected_checkpoint, map_location='cpu', weights_only=False)
             assert loaded['type'] == 'uncompressed'
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

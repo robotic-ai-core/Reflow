@@ -351,7 +351,3 @@ class TestSimpleDataModule:
         
         torch.testing.assert_close(train_sample_1["input"], train_sample_2["input"])
         torch.testing.assert_close(train_sample_1["target"], train_sample_2["target"])
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

@@ -430,7 +430,3 @@ class TestConfigPriorityWithComplexScenarios:
             early_stop = callbacks[2]
             assert early_stop['class_path'] == 'lightning.pytorch.callbacks.EarlyStopping'
             assert early_stop['init_args']['patience'] == 10
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

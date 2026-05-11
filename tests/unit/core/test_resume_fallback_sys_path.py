@@ -275,7 +275,3 @@ class TestResumeFallbackPropagatesPythonPath:
         pythonpath = env["PYTHONPATH"]
         # Should not end with a pathsep (no trailing empty entry)
         assert not pythonpath.endswith(os.pathsep)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

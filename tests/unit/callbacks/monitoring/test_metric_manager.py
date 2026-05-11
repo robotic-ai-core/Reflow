@@ -245,7 +245,3 @@ class TestMetricPopulation:
         metric_manager.populate_metrics_if_needed(force_refresh=True)
 
         assert 'old_key' not in metric_manager._interval_metric_keys_cache
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

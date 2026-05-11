@@ -298,7 +298,3 @@ class TestCLIStaleConfigHandling:
             cli._enable_config_overwrite(kwargs)
             assert kwargs['save_config_kwargs']['overwrite'] is True
             assert kwargs['save_config_kwargs']['skip_none'] is False
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

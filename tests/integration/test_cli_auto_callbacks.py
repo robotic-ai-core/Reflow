@@ -305,7 +305,3 @@ class TestEndToEndCLI:
 
             # Should have added callbacks
             assert len(cli.trainer.callbacks) >= 1
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"]) 

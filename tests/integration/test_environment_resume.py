@@ -210,7 +210,3 @@ class TestEnvironmentVariableResume:
                 os.environ[env_var] = original_value
             elif env_var in os.environ:
                 del os.environ[env_var]
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

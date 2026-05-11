@@ -249,7 +249,3 @@ class TestSimpleReflowModel:
         assert model.hparams.input_dim == 512
         assert model.hparams.hidden_dim == 256
         assert model.hparams.learning_rate == 0.01
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

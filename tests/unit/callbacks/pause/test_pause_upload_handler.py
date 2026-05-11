@@ -284,7 +284,3 @@ class TestHandleUploadWithFallback:
             )
 
         assert result is None
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

@@ -500,7 +500,3 @@ class TestConfigMergingEdgeCases:
             assert backbone_params['freeze'] == True       # Overridden
             assert backbone_params['pretrained'] == True   # From checkpoint
             assert config['model']['init_args']['backbone']['type'] == 'resnet'  # From checkpoint
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

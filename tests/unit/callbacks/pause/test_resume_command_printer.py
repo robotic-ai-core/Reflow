@@ -218,7 +218,3 @@ class TestUpdateOriginalArgv:
         printer.update_original_argv(new_argv)
 
         assert printer._original_argv == new_argv
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

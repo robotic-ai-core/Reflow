@@ -262,7 +262,3 @@ class TestErrorHandlingAndEdgeCases:
         # Verify checkpoint loads but has no W&B data
         loaded = torch.load(checkpoint_path, weights_only=False)
         assert 'wandb_run_id' not in loaded
-
-
-if __name__ == "__main__":
-    pytest.main([__file__])

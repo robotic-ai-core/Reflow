@@ -316,7 +316,3 @@ class TestEndToEndPipeline:
         
         torch.testing.assert_close(sample1['input'], sample3['input'])
         torch.testing.assert_close(sample1['target'], sample3['target'])
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

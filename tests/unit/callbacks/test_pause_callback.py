@@ -291,7 +291,3 @@ class TestPauseCallback:
             
             # Verify add_config_metadata was called exactly once
             mock_add_config_metadata.assert_called_once()
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

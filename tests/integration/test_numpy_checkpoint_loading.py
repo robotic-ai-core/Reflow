@@ -195,7 +195,3 @@ def sample_config(temp_dir):
     with open(config_path, 'w') as f:
         yaml.dump(config, f)
     return config_path
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-s"])

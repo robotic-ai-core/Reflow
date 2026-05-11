@@ -418,7 +418,3 @@ class TestArtifactNotFoundFallback:
 
             assert checkpoint_path is not None
             assert checkpoint_path.exists()
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

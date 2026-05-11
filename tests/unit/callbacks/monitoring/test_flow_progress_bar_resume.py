@@ -146,7 +146,3 @@ class TestFlowProgressBarResume:
         
         # Progress bars should not be created when disabled
         assert callback.total_steps_bar is None
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"]) 
