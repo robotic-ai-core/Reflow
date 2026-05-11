@@ -272,7 +272,7 @@ class TestCustomManagerRestore:
         # Cleanup
         unregister_manager("dummy_test_manager")
 
-    def test_partial_restore_failure_logged(self, pause_callback, clean_registry, capsys):
+    def test_partial_restore_failure_logged(self, pause_callback, clean_registry, caplog):
         """If one manager fails to restore, others should still be restored."""
 
         class FailingManager:
@@ -315,15 +315,16 @@ class TestCustomManagerRestore:
         with patch.object(pause_callback, "add_config_metadata"):
             pause_callback.on_save_checkpoint(trainer, pl_module, checkpoint)
 
-        with patch.object(type(pause_callback).__bases__[0], "on_load_checkpoint"):
-            pause_callback.on_load_checkpoint(trainer, pl_module, checkpoint)
+        import logging
+        with caplog.at_level(logging.WARNING, logger="lightning_reflow.callbacks.pause.pause_callback"):
+            with patch.object(type(pause_callback).__bases__[0], "on_load_checkpoint"):
+                pause_callback.on_load_checkpoint(trainer, pl_module, checkpoint)
 
         # The success manager should still have been restored
         assert success.was_restored is True
 
-        # Failing manager should be reported
-        output = capsys.readouterr().out
-        assert "failed" in output.lower()
+        # Failing manager should be reported in the warning log
+        assert any("failed" in r.message.lower() for r in caplog.records)
 
         # Cleanup
         unregister_manager("failing_manager")

@@ -9,6 +9,7 @@ if desired, which is useful for:
 - Experiments where you want human review before termination
 """
 
+import logging
 from typing import Any, Dict, Optional
 
 import torch
@@ -16,6 +17,8 @@ from lightning.pytorch import LightningModule, Trainer
 from lightning.pytorch.callbacks import EarlyStopping
 
 from .pause_callback import PauseCallback
+
+logger = logging.getLogger(__name__)
 
 
 class EarlyPauseCallback(EarlyStopping):
@@ -123,7 +126,7 @@ class EarlyPauseCallback(EarlyStopping):
         if self.check_finite and not torch.isfinite(current):
             # Let training stop for NaN/Inf - this is a serious problem
             if self.verbose:
-                print(f"\n⚠️ Metric {self.monitor} is {current}. Stopping training.")
+                logger.warning("Metric %s is %s. Stopping training.", self.monitor, current)
             trainer.should_stop = True
             return
 
@@ -137,7 +140,7 @@ class EarlyPauseCallback(EarlyStopping):
     def _trigger_pause(self, trainer: Trainer, reason: str | None) -> None:
         """Schedule a pause checkpoint via PauseCallback's public API."""
         if self._pause_callback is None:
-            print("⚠️ EarlyPauseCallback: PauseCallback not found, falling back to stop")
+            logger.warning("EarlyPauseCallback: PauseCallback not found, falling back to stop")
             trainer.should_stop = True
             return
 
@@ -174,4 +177,4 @@ class EarlyPauseCallback(EarlyStopping):
         if self.reset_patience_on_resume:
             self.wait_count = 0
             if self.verbose:
-                print(f"🔄 EarlyPauseCallback: Reset patience (wait_count=0) on resume")
+                logger.info("EarlyPauseCallback: Reset patience (wait_count=0) on resume")

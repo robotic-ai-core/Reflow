@@ -286,8 +286,8 @@ class TestPauseCallback:
             # Schedule pause
             callback._state_machine.toggle_pause()
             
-            # Execute pause
-            callback._execute_validation_boundary_pause(mock_trainer, simple_model)
+            # Execute pause via the consolidated path (atomic=True == validation-boundary)
+            callback._execute_pause(mock_trainer, simple_model, atomic=True)
             
             # Verify add_config_metadata was called exactly once
             mock_add_config_metadata.assert_called_once()

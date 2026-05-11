@@ -4,6 +4,7 @@ Detects key presses from interactive stdin, ignoring rapid bursts that
 look like pasted/automated input.
 """
 
+import logging
 import sys
 import threading
 import time
@@ -17,6 +18,8 @@ try:
     HAS_TERMIOS = True
 except ImportError:
     HAS_TERMIOS = False
+
+logger = logging.getLogger(__name__)
 
 
 class KeyboardHandler:
@@ -51,10 +54,10 @@ class KeyboardHandler:
             self._monitor_thread = threading.Thread(target=self._monitor_keyboard, daemon=True)
             self._monitor_thread.start()
             
-            print(f"⌨️  Keyboard monitoring started")
-            
+            logger.info("Keyboard monitoring started")
+
         except (termios.error, OSError) as e:
-            print(f"⚠️  Failed to initialize keyboard monitoring: {e}")
+            logger.warning("Failed to initialize keyboard monitoring: %s", e)
     
     def stop_monitoring(self) -> None:
         """Stop keyboard monitoring and restore terminal."""
@@ -104,7 +107,7 @@ class KeyboardHandler:
                         # If more characters arrived, it's likely automated input
                         if additional_chars:
                             all_chars = first_char + ''.join(additional_chars)
-                            print(f"🛡️ Ignored automated input: {repr(all_chars)}")
+                            logger.debug("Ignored automated input: %r", all_chars)
                         else:
                             # Single character with no followers - accept it
                             self._key_queue.put(first_char)
