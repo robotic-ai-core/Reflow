@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
 from .resume_strategy import ResumeStrategy
-from ..services.wandb_service import WandbService
+from ..utils.wandb.wandb_service import WandbService
 
 logger = logging.getLogger(__name__)
 

@@ -215,14 +215,7 @@ class CheckpointUploadHelper:
                 checkpoint_dir.mkdir(parents=True, exist_ok=True)
                 checkpoint_path = checkpoint_dir / filename
 
-            # Save comprehensive checkpoint
-            from ...utils.checkpoint.checkpoint_utils import save_comprehensive_checkpoint
-            save_comprehensive_checkpoint(
-                trainer, pl_module,
-                str(checkpoint_path),
-                reason=f"emergency_{reason}",
-                extra_metadata={'wandb_run_id': wandb_run_id}
-            )
+            trainer.save_checkpoint(str(checkpoint_path))
 
             if checkpoint_path.exists() and checkpoint_path.stat().st_size > 0:
                 self.logger.info(f"Created emergency checkpoint: {checkpoint_path}")

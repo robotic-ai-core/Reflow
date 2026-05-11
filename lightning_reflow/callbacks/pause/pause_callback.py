@@ -6,7 +6,7 @@ from typing import Optional, Any, Dict
 from lightning.pytorch import Trainer, LightningModule
 from lightning.pytorch.callbacks import Callback
 
-from .improved_keyboard_handler import ImprovedKeyboardHandler
+from .keyboard_handler import KeyboardHandler
 from .pause_state_machine import PauseState, PauseStateMachine
 from .pause_checkpoint_manager import PauseCheckpointManager
 from .pause_upload_handler import PauseUploadHandler
@@ -51,7 +51,6 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         pause_key: str = 'p',
         upload_key: str = 'w',
         debounce_interval: float = 0.3,
-        startup_grace_period: float = 2.0,  # New: grace period to ignore automated input
         refresh_rate: int = 1,
         bar_colour: str = "#fcac17",
         global_bar_metrics: list = None,
@@ -75,13 +74,12 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         self.pause_key = pause_key
         self.upload_key = upload_key
         self.debounce_interval = debounce_interval
-        self.startup_grace_period = startup_grace_period  # New: store grace period
         self.enable_pause_context_management = enable_pause_context_management
         self.show_pause_countdown = show_pause_countdown
 
         # State management
         self._state_machine = PauseStateMachine()
-        self._keyboard_handler: Optional[ImprovedKeyboardHandler] = None
+        self._keyboard_handler: Optional[KeyboardHandler] = None
         self._last_key_time = 0.0
         # Initialize shared WandB artifact manager
         self._wandb_manager = WandbArtifactManager(verbose=True)
@@ -218,11 +216,7 @@ class PauseCallback(FlowProgressBarCallback, ConfigEmbeddingMixin):
         
         if self.enable_pause and trainer.is_global_zero:
             try:
-                # Pass startup_grace_period to keyboard handler
-                self._keyboard_handler = ImprovedKeyboardHandler(
-                    debounce_interval=self.debounce_interval,
-                    startup_grace_period=self.startup_grace_period
-                )
+                self._keyboard_handler = KeyboardHandler()
                 # Start monitoring instead of registering keys
                 self._keyboard_handler.start_monitoring()
             except Exception as e:

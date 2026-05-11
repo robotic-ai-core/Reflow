@@ -1,4 +1,4 @@
-"""Tests for artifact version pruning in UnifiedArtifactManager.
+"""Tests for artifact version pruning in WandbArtifactManager.
 
 Verifies that keep_n_versions correctly prunes old artifact versions
 without accidentally deleting versions that should be kept.
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 
-from lightning_reflow.utils.wandb.unified_artifact_manager import UnifiedArtifactManager
+from lightning_reflow.utils.wandb.wandb_artifact_manager import WandbArtifactManager
 
 
 # ---------------------------------------------------------------------------
@@ -56,8 +56,8 @@ def make_versions(n: int, aliased_indices: Optional[List[int]] = None) -> List[F
 
 @pytest.fixture
 def manager():
-    """Create UnifiedArtifactManager with keep_n_versions=3."""
-    return UnifiedArtifactManager(verbose=True, keep_n_versions=3)
+    """Create WandbArtifactManager with keep_n_versions=3."""
+    return WandbArtifactManager(verbose=True, keep_n_versions=3)
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +121,7 @@ class TestPruneOldVersions:
 
     def test_prune_with_keep_n_1(self):
         """keep_n=1: Only the newest version survives."""
-        mgr = UnifiedArtifactManager(verbose=True, keep_n_versions=1)
+        mgr = WandbArtifactManager(verbose=True, keep_n_versions=1)
         versions = make_versions(4, aliased_indices=[0])
 
         with patch("wandb.Api") as mock_api_cls:
@@ -144,7 +144,7 @@ class TestAliasProtection:
 
     def test_aliased_version_in_delete_range_is_skipped(self):
         """If an aliased version falls in the delete range, it must be skipped."""
-        mgr = UnifiedArtifactManager(verbose=True, keep_n_versions=2)
+        mgr = WandbArtifactManager(verbose=True, keep_n_versions=2)
         versions = make_versions(5, aliased_indices=[0])
 
         # Manually add alias to v1 (index 3) — simulates user-pinned alias
@@ -167,7 +167,7 @@ class TestAliasProtection:
 
     def test_all_versions_aliased(self):
         """If every version has aliases, nothing gets deleted."""
-        mgr = UnifiedArtifactManager(verbose=True, keep_n_versions=1)
+        mgr = WandbArtifactManager(verbose=True, keep_n_versions=1)
         versions = make_versions(3, aliased_indices=[0, 1, 2])
 
         with patch("wandb.Api") as mock_api_cls:
@@ -184,7 +184,7 @@ class TestAliasProtection:
 
     def test_latest_alias_always_on_newest(self):
         """Standard case: :latest on newest version, only it's protected by keep_n."""
-        mgr = UnifiedArtifactManager(verbose=True, keep_n_versions=2)
+        mgr = WandbArtifactManager(verbose=True, keep_n_versions=2)
         versions = make_versions(4, aliased_indices=[0])
 
         with patch("wandb.Api") as mock_api_cls:
@@ -268,7 +268,7 @@ class TestUploadArtifactIntegration:
 
     def test_keep_n_none_skips_pruning(self):
         """When keep_n_versions=None, no pruning happens."""
-        mgr = UnifiedArtifactManager(verbose=True, keep_n_versions=None)
+        mgr = WandbArtifactManager(verbose=True, keep_n_versions=None)
         trainer = self._make_mock_trainer()
         run = self._make_mock_wandb_run()
 
@@ -284,7 +284,7 @@ class TestUploadArtifactIntegration:
 
     def test_keep_n_0_skips_pruning(self):
         """keep_n_versions=0 is rejected (guard: >= 1)."""
-        mgr = UnifiedArtifactManager(verbose=True, keep_n_versions=0)
+        mgr = WandbArtifactManager(verbose=True, keep_n_versions=0)
         trainer = self._make_mock_trainer()
         run = self._make_mock_wandb_run()
 
@@ -300,7 +300,7 @@ class TestUploadArtifactIntegration:
 
     def test_keep_n_positive_triggers_pruning_for_model(self):
         """keep_n_versions > 0 with artifact_type='model' triggers pruning."""
-        mgr = UnifiedArtifactManager(verbose=True, keep_n_versions=3)
+        mgr = WandbArtifactManager(verbose=True, keep_n_versions=3)
         trainer = self._make_mock_trainer()
         run = self._make_mock_wandb_run()
 
@@ -319,7 +319,7 @@ class TestUploadArtifactIntegration:
 
     def test_pruning_skipped_for_config_type(self):
         """Pruning only applies to 'model' type, not 'config'."""
-        mgr = UnifiedArtifactManager(verbose=True, keep_n_versions=3)
+        mgr = WandbArtifactManager(verbose=True, keep_n_versions=3)
         trainer = self._make_mock_trainer()
         run = self._make_mock_wandb_run()
 
@@ -335,7 +335,7 @@ class TestUploadArtifactIntegration:
 
     def test_wait_called_before_pruning(self):
         """Artifact.wait() is called before pruning to ensure commit."""
-        mgr = UnifiedArtifactManager(verbose=True, keep_n_versions=2)
+        mgr = WandbArtifactManager(verbose=True, keep_n_versions=2)
         trainer = self._make_mock_trainer()
         run = self._make_mock_wandb_run()
         logged = run.log_artifact.return_value
@@ -363,7 +363,7 @@ class TestCrossCollectionIsolation:
 
     def test_best_and_latest_are_independent(self):
         """Pruning 'abc-latest' never queries or touches 'abc-best'."""
-        mgr = UnifiedArtifactManager(verbose=True, keep_n_versions=2)
+        mgr = WandbArtifactManager(verbose=True, keep_n_versions=2)
 
         latest_versions = make_versions(4, aliased_indices=[0])
         best_versions = make_versions(3, aliased_indices=[0])

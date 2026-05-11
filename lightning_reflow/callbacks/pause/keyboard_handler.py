@@ -1,4 +1,8 @@
-"""Improved non-blocking keyboard handler with simple bulk input rejection."""
+"""Non-blocking keyboard handler with bulk-input rejection.
+
+Detects key presses from interactive stdin, ignoring rapid bursts that
+look like pasted/automated input.
+"""
 
 import sys
 import threading
@@ -15,10 +19,10 @@ except ImportError:
     HAS_TERMIOS = False
 
 
-class ImprovedKeyboardHandler:
+class KeyboardHandler:
     """Keyboard handler with time-window detection for automated input."""
-    
-    def __init__(self, debounce_interval: float = 0.2, startup_grace_period: float = 2.0):
+
+    def __init__(self):
         self._monitoring = False
         self._monitor_thread: Optional[threading.Thread] = None
         self._key_queue: Queue = Queue()
@@ -135,15 +139,7 @@ class NoOpKeyboardHandler:
         return None
 
 
-def create_improved_keyboard_handler(debounce_interval: float = 0.2, startup_grace_period: float = 2.0):
-    """Create improved keyboard handler with bulk input rejection.
-    
-    Args:
-        debounce_interval: Kept for backward compatibility but not used
-        startup_grace_period: Kept for backward compatibility but not used
-    """
-    handler = ImprovedKeyboardHandler(debounce_interval, startup_grace_period)
-    if handler.is_available():
-        return handler
-    else:
-        return NoOpKeyboardHandler()
+def create_keyboard_handler():
+    """Return a real or no-op keyboard handler depending on TTY availability."""
+    handler = KeyboardHandler()
+    return handler if handler.is_available() else NoOpKeyboardHandler()

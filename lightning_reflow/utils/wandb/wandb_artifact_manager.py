@@ -1,75 +1,156 @@
-"""
-Shared W&B artifact management utilities for all callbacks.
+"""W&B artifact manager.
 
-This module provides centralized W&B artifact operations to eliminate code duplication
-between different callbacks that need to upload checkpoints, configs, or other artifacts.
-
-Note: This module delegates to UnifiedArtifactManager for all core functionality.
-It provides a backward-compatible interface for existing callers.
+Consolidates checkpoint and config artifact uploads behind a single class.
 """
 
-import logging
-from typing import Any, Dict, List, Optional
+import time
+import warnings
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+import torch
 import wandb
 from lightning.pytorch import Trainer
 from lightning.pytorch.core import LightningModule
+from lightning.pytorch.loggers import WandbLogger
 
-from .unified_artifact_manager import UnifiedArtifactManager
+from ..logging.logging_config import get_logger
 
 
 class WandbArtifactManager:
     """
-    Centralized W&B artifact management for all callbacks.
+    Consolidated artifact manager that handles all types of W&B uploads.
 
-    This class provides shared functionality for uploading checkpoints, configs,
-    and other artifacts to W&B, ensuring consistency across different callbacks.
-
-    Note: This class delegates to UnifiedArtifactManager for all operations.
-    It is maintained for backward compatibility with existing callers.
+    This class eliminates duplication between checkpoint and config uploads
+    by providing a unified interface for all artifact operations.
     """
 
     def __init__(self, verbose: bool = True, keep_n_versions: Optional[int] = None):
         """
-        Initialize the artifact manager.
+        Initialize the unified artifact manager.
 
         Args:
             verbose: Whether to log verbose messages
             keep_n_versions: If set, delete older artifact versions after upload,
-                keeping only the N most recent.
+                keeping only the N most recent. Prevents W&B storage accumulation
+                from periodic checkpoint saves.
         """
         self.verbose = verbose
-        self.logger = logging.getLogger(__name__)
-        self._unified_manager = UnifiedArtifactManager(
-            verbose=verbose, keep_n_versions=keep_n_versions
-        )
-
+        self.keep_n_versions = keep_n_versions
+        self.logger = get_logger(__name__)
+    
     @staticmethod
     def get_wandb_run(trainer: Trainer) -> Optional[wandb.sdk.wandb_run.Run]:
         """
         Get W&B run from trainer's logger.
-
+        
         Args:
             trainer: Lightning trainer instance
-
+            
         Returns:
             W&B run object if found, None otherwise
         """
-        return UnifiedArtifactManager.get_wandb_run(trainer)
-
-    @staticmethod
-    def get_wandb_run_id(trainer: Trainer = None) -> Optional[str]:
+        if hasattr(trainer, 'logger') and isinstance(trainer.logger, WandbLogger):
+            return trainer.logger.experiment
+        return None
+    
+    def upload_artifact(
+        self,
+        trainer: Trainer,
+        files: Dict[str, str],
+        artifact_name: str,
+        artifact_type: str,
+        aliases: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        wandb_run: Optional[wandb.sdk.wandb_run.Run] = None,
+        pl_module: Optional[LightningModule] = None
+    ) -> Optional[str]:
         """
-        Get current W&B run ID.
-
+        Upload files as W&B artifact with unified handling.
+        
         Args:
-            trainer: Optional trainer to extract run from
-
+            trainer: Lightning trainer instance
+            files: Dictionary mapping artifact paths to local file paths
+            artifact_name: Name of the artifact
+            artifact_type: Type of artifact (checkpoint, config, etc.)
+            aliases: List of aliases for the artifact
+            metadata: Additional metadata to include
+            wandb_run: Optional W&B run (will auto-detect if not provided)
+            pl_module: Optional Lightning module for checkpoint metadata
+            
         Returns:
-            W&B run ID if available, None otherwise
+            Artifact path (name:version) if successful, None otherwise
         """
-        return UnifiedArtifactManager.get_wandb_run_id(trainer)
+        try:
+            # Validate files
+            validated_files = self._validate_files(files)
+            if not validated_files:
+                if self.verbose and trainer.is_global_zero:
+                    self.logger.warning(f"No valid files to upload for {artifact_name}")
+                return None
+            
+            # Get W&B run
+            if wandb_run is None:
+                wandb_run = self.get_wandb_run(trainer)
+            
+            if not wandb_run:
+                if self.verbose and trainer.is_global_zero:
+                    self.logger.warning(f"No W&B run available for {artifact_name} upload")
+                return None
+            
+            # Create artifact with metadata
+            artifact = self._create_artifact(
+                wandb_run=wandb_run,
+                name=artifact_name,
+                artifact_type=artifact_type,
+                metadata=metadata,
+                trainer=trainer,
+                pl_module=pl_module
+            )
+            
+            # Add files to artifact
+            for artifact_path, local_path in validated_files.items():
+                if self.verbose and trainer.is_global_zero:
+                    self.logger.info(f"Adding {local_path} to {artifact_name}")
+                artifact.add_file(local_path, artifact_path)
 
+            if self.verbose and trainer.is_global_zero:
+                self.logger.info(f"Uploading {artifact_name} artifact...")
+
+            # Pass aliases to log_artifact (not as property - causes error in newer W&B)
+            logged_artifact = wandb_run.log_artifact(artifact, aliases=aliases or [])
+
+            # Construct full artifact reference for resuming
+            entity = getattr(wandb_run, 'entity', 'unknown')
+            project = getattr(wandb_run, 'project', 'unknown')
+            # logged_artifact from log_artifact is the logged artifact object
+            artifact_version = getattr(logged_artifact, 'version', 'latest') if logged_artifact else 'latest'
+            full_artifact_path = f"{entity}/{project}/{artifact_name}:{artifact_version}"
+
+            if self.verbose and trainer.is_global_zero:
+                self.logger.info(f"Successfully uploaded {artifact_name} artifact")
+                self.logger.info(f"Full artifact reference: {full_artifact_path}")
+
+            # Prune old versions to prevent storage accumulation
+            if self.keep_n_versions is not None and self.keep_n_versions >= 1 and artifact_type == "model":
+                # Wait for upload to commit before pruning, so the new version
+                # appears in the version list and won't be accidentally deleted
+                if logged_artifact is not None and hasattr(logged_artifact, 'wait'):
+                    logged_artifact.wait()
+                self._prune_old_versions(
+                    entity=entity,
+                    project=project,
+                    artifact_name=artifact_name,
+                    artifact_type=artifact_type,
+                )
+
+            return full_artifact_path
+            
+        except Exception as e:
+            if self.verbose and trainer.is_global_zero:
+                self.logger.warning(f"Failed to upload {artifact_name} artifact: {e}")
+            return None
+    
     def upload_checkpoint_artifact(
         self,
         trainer: Trainer,
@@ -84,8 +165,8 @@ class WandbArtifactManager:
         extra_metadata: Optional[Dict[str, Any]] = None
     ) -> Optional[str]:
         """
-        Upload checkpoint as W&B artifact with standardized naming and metadata.
-
+        Upload checkpoint as W&B artifact using unified interface.
+        
         Args:
             trainer: Lightning trainer instance
             pl_module: Lightning module instance
@@ -97,22 +178,264 @@ class WandbArtifactManager:
             step: Optional step number
             wandb_run: Optional W&B run (will auto-detect if not provided)
             extra_metadata: Additional metadata to include
-
+            
         Returns:
-            Full artifact path (entity/project/name:version) if successful, None otherwise
+            Artifact name with version if successful, None otherwise
         """
-        return self._unified_manager.upload_checkpoint_artifact(
+        # Generate artifact name
+        if wandb_run is None:
+            wandb_run = self.get_wandb_run(trainer)
+        
+        if not wandb_run:
+            return None
+        
+        artifact_name = f"{wandb_run.id}-{ckpt_type}"
+        
+        # Prepare files dictionary
+        files = {Path(filepath).name: filepath}
+        
+        # Prepare metadata
+        metadata = self._create_checkpoint_metadata(
             trainer=trainer,
             pl_module=pl_module,
-            filepath=filepath,
             ckpt_type=ckpt_type,
-            aliases=aliases,
             score=score,
             epoch=epoch,
             step=step,
-            wandb_run=wandb_run,
             extra_metadata=extra_metadata
         )
+        
+        return self.upload_artifact(
+            trainer=trainer,
+            files=files,
+            artifact_name=artifact_name,
+            artifact_type="model",
+            aliases=aliases,
+            metadata=metadata,
+            wandb_run=wandb_run,
+            pl_module=pl_module
+        )
+    
+    def upload_config_artifact(
+        self,
+        trainer: Trainer,
+        config_paths: Union[str, List[str]],
+        run_id: Optional[str] = None,
+        wandb_run: Optional[wandb.sdk.wandb_run.Run] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None
+    ) -> Optional[str]:
+        """
+        Upload config files as W&B artifact using unified interface.
+        
+        Args:
+            trainer: Lightning trainer instance
+            config_paths: Path to config file or list of config file paths
+            run_id: Optional run ID (will auto-detect if not provided)
+            wandb_run: Optional W&B run (will auto-detect if not provided)
+            extra_metadata: Additional metadata to include
+            
+        Returns:
+            Artifact path (name:version) if successful, None otherwise
+        """
+        # Normalize config_paths to list
+        if isinstance(config_paths, str):
+            config_paths = [config_paths]
+        
+        # Prepare files dictionary
+        files = {}
+        for config_path in config_paths:
+            if config_path and Path(config_path).exists():
+                files[Path(config_path).name] = config_path
+        
+        if not files:
+            if self.verbose and trainer.is_global_zero:
+                self.logger.warning("No valid config files found")
+            return None
+        
+        # Get run ID
+        if run_id is None:
+            if wandb_run is None:
+                wandb_run = self.get_wandb_run(trainer)
+            run_id = wandb_run.id if wandb_run else "unknown"
+        
+        # Generate artifact name
+        artifact_name = f"{run_id}-config"
+        
+        # Prepare metadata
+        metadata = self._create_config_metadata(
+            trainer=trainer,
+            config_paths=list(files.values()),
+            extra_metadata=extra_metadata
+        )
+        
+        return self.upload_artifact(
+            trainer=trainer,
+            files=files,
+            artifact_name=artifact_name,
+            artifact_type="config",
+            aliases=None,
+            metadata=metadata,
+            wandb_run=wandb_run
+        )
+    
+    def _prune_old_versions(
+        self,
+        entity: str,
+        project: str,
+        artifact_name: str,
+        artifact_type: str,
+    ) -> None:
+        """Delete old artifact versions, keeping only the most recent N.
+
+        This runs after each upload to prevent unbounded storage growth from
+        periodic checkpoint saves.  Uses ``wandb.Api`` (REST) which shares
+        the same auth as the active run.
+
+        Safety guarantees:
+        - Versions with aliases (e.g. :latest, :best) are never deleted
+        - The API returns versions newest-first, so ``versions[:keep_n]``
+          always preserves the most recent uploads
+        - Deletion failures are logged but never propagate
+        """
+        try:
+            api = wandb.Api(overrides={"entity": entity, "project": project})
+            collection_path = f"{entity}/{project}/{artifact_name}"
+            # artifacts() returns newest-first (verified empirically)
+            versions = list(
+                api.artifacts(type_name=artifact_type, name=collection_path)
+            )
+            candidates = versions[self.keep_n_versions:]
+            deleted = 0
+            skipped_aliased = 0
+            for v in candidates:
+                # Never delete versions that have aliases — they may be
+                # referenced by :latest, :best, or user-defined aliases
+                if getattr(v, 'aliases', None):
+                    skipped_aliased += 1
+                    continue
+                try:
+                    v.delete()
+                    deleted += 1
+                except Exception as exc:
+                    self.logger.debug(
+                        f"Could not delete {artifact_name}:{v.version}: {exc}"
+                    )
+            if deleted:
+                self.logger.info(
+                    f"Pruned {deleted} old version(s) of {artifact_name}, "
+                    f"keeping {self.keep_n_versions}"
+                )
+            if skipped_aliased:
+                self.logger.debug(
+                    f"Skipped {skipped_aliased} aliased version(s) of {artifact_name}"
+                )
+        except Exception as e:
+            # Pruning is best-effort — never fail the upload
+            self.logger.debug(f"Artifact pruning skipped for {artifact_name}: {e}")
+
+    def _validate_files(self, files: Dict[str, str]) -> Dict[str, str]:
+        """Validate that all files exist and are not empty."""
+        validated_files = {}
+        for artifact_path, local_path in files.items():
+            if Path(local_path).exists() and Path(local_path).stat().st_size > 0:
+                validated_files[artifact_path] = local_path
+            else:
+                if self.verbose:
+                    self.logger.warning(f"Invalid file: {local_path}")
+        return validated_files
+    
+    def _create_artifact(
+        self,
+        wandb_run: wandb.sdk.wandb_run.Run,
+        name: str,
+        artifact_type: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        trainer: Optional[Trainer] = None,
+        pl_module: Optional[LightningModule] = None
+    ) -> wandb.Artifact:
+        """Create W&B artifact with standardized metadata."""
+        artifact = wandb.Artifact(name=name, type=artifact_type, metadata=metadata or {})
+        
+        # Add standard metadata
+        artifact.metadata.update({
+            "created_by": "DiffusionFlow",
+            "created_timestamp": time.time(),
+            "wandb_run_id": wandb_run.id
+        })
+        
+        # Add W&B relationship metadata for checkpoints
+        if artifact_type == "model" and wandb_run:
+            artifact.metadata.update({
+                'entity': getattr(wandb_run, 'entity', 'unknown'),
+                'project': getattr(wandb_run, 'project', 'unknown'),
+                'artifact_relationships': {
+                    'expected_config_artifact': f"{getattr(wandb_run, 'entity', 'unknown')}/{getattr(wandb_run, 'project', 'unknown')}/{wandb_run.id}-config",
+                    'expected_config_artifact_name': f"{wandb_run.id}-config"
+                }
+            })
+        
+        # Add trainer metadata if available
+        if trainer:
+            artifact.metadata.update({
+                "current_epoch": trainer.current_epoch,
+                "global_step": trainer.global_step,
+                "trainer_state": str(trainer.state)
+            })
+        
+        # Add model metadata if available
+        if pl_module:
+            artifact.metadata.update({
+                "model_class": pl_module.__class__.__name__,
+                "model_hparams": getattr(pl_module, 'hparams', {})
+            })
+        
+        return artifact
+    
+    def _create_checkpoint_metadata(
+        self,
+        trainer: Trainer,
+        pl_module: LightningModule,
+        ckpt_type: str,
+        score: Optional[float] = None,
+        epoch: Optional[int] = None,
+        step: Optional[int] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Create checkpoint-specific metadata."""
+        metadata = {
+            "checkpoint_type": ckpt_type,
+            "epoch": epoch or trainer.current_epoch,
+            "global_step": step or trainer.global_step,
+            "model_class": pl_module.__class__.__name__,
+            "pytorch_version": torch.__version__,
+        }
+        
+        if score is not None:
+            metadata["score"] = score
+        
+        if extra_metadata:
+            metadata.update(extra_metadata)
+        
+        return metadata
+    
+    def _create_config_metadata(
+        self,
+        trainer: Trainer,
+        config_paths: List[str],
+        extra_metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Create config-specific metadata."""
+        metadata = {
+            "config_files": [Path(p).name for p in config_paths],
+            "num_config_files": len(config_paths),
+            "current_epoch": trainer.current_epoch,
+            "global_step": trainer.global_step,
+        }
+
+        if extra_metadata:
+            metadata.update(extra_metadata)
+
+        return metadata
 
     def extract_score_from_trainer(
         self,
@@ -129,33 +452,39 @@ class WandbArtifactManager:
         Returns:
             Metric value if found, None otherwise
         """
-        return self._unified_manager.extract_score_from_trainer(trainer, metric_name)
+        if not metric_name:
+            return None
 
-    def upload_config_artifact(
-        self,
-        trainer: Trainer,
-        config_paths,
-        run_id: Optional[str] = None,
-        wandb_run: Optional[wandb.sdk.wandb_run.Run] = None,
-        extra_metadata: Optional[Dict[str, Any]] = None
-    ) -> Optional[str]:
+        try:
+            metric_val = trainer.callback_metrics.get(metric_name)
+            if metric_val is not None:
+                return metric_val.item() if isinstance(metric_val, torch.Tensor) else float(metric_val)
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def get_wandb_run_id(trainer: Trainer = None) -> Optional[str]:
         """
-        Upload config files as W&B artifact.
+        Get current W&B run ID.
 
         Args:
-            trainer: Lightning trainer instance
-            config_paths: Path to config file or list of config file paths
-            run_id: Optional run ID (will auto-detect if not provided)
-            wandb_run: Optional W&B run (will auto-detect if not provided)
-            extra_metadata: Additional metadata to include
+            trainer: Optional trainer to extract run from
 
         Returns:
-            Artifact path if successful, None otherwise
+            W&B run ID if available, None otherwise
         """
-        return self._unified_manager.upload_config_artifact(
-            trainer=trainer,
-            config_paths=config_paths,
-            run_id=run_id,
-            wandb_run=wandb_run,
-            extra_metadata=extra_metadata
-        )
+        try:
+            # Try to get from trainer first
+            if trainer:
+                run = WandbArtifactManager.get_wandb_run(trainer)
+                if run and run.id:
+                    return run.id
+
+            # Fallback to global wandb run
+            if wandb.run and wandb.run.id:
+                return wandb.run.id
+
+        except Exception:
+            pass
+        return None

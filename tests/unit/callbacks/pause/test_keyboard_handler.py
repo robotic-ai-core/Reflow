@@ -8,9 +8,9 @@ import threading
 from unittest.mock import Mock, patch, MagicMock
 from queue import Queue
 
-from lightning_reflow.callbacks.pause.improved_keyboard_handler import (
-    ImprovedKeyboardHandler,
-    create_improved_keyboard_handler
+from lightning_reflow.callbacks.pause.keyboard_handler import (
+    KeyboardHandler,
+    create_keyboard_handler
 )
 
 
@@ -41,15 +41,15 @@ class MockStdin:
             self.input_queue.put(char)
 
 
-class TestImprovedKeyboardHandler:
+class TestKeyboardHandler:
     """Test the improved keyboard handler with time-window detection."""
     
     @pytest.fixture
     def mock_termios(self):
         """Mock termios module."""
-        with patch('lightning_reflow.callbacks.pause.improved_keyboard_handler.HAS_TERMIOS', True):
-            with patch('lightning_reflow.callbacks.pause.improved_keyboard_handler.termios'):
-                with patch('lightning_reflow.callbacks.pause.improved_keyboard_handler.tty'):
+        with patch('lightning_reflow.callbacks.pause.keyboard_handler.HAS_TERMIOS', True):
+            with patch('lightning_reflow.callbacks.pause.keyboard_handler.termios'):
+                with patch('lightning_reflow.callbacks.pause.keyboard_handler.tty'):
                     yield
     
     @pytest.fixture
@@ -59,7 +59,7 @@ class TestImprovedKeyboardHandler:
     
     def test_handler_initialization(self, mock_termios):
         """Test keyboard handler initialization."""
-        handler = ImprovedKeyboardHandler()
+        handler = KeyboardHandler()
         
         assert handler._monitoring is False
         assert handler._monitor_thread is None
@@ -68,10 +68,10 @@ class TestImprovedKeyboardHandler:
     
     def test_single_character_accepted(self, mock_termios, mock_stdin):
         """Test that single characters with no followers are accepted."""
-        handler = ImprovedKeyboardHandler()
+        handler = KeyboardHandler()
         
         # Mock select to return True when we have input
-        with patch('lightning_reflow.callbacks.pause.improved_keyboard_handler.select.select') as mock_select:
+        with patch('lightning_reflow.callbacks.pause.keyboard_handler.select.select') as mock_select:
             with patch('sys.stdin', mock_stdin):
                 # Add single 'p' to input
                 mock_stdin.add_input('p')
@@ -95,9 +95,9 @@ class TestImprovedKeyboardHandler:
     
     def test_automated_input_rejected(self, mock_termios, mock_stdin):
         """Test that rapid character sequences are rejected as automated."""
-        handler = ImprovedKeyboardHandler()
+        handler = KeyboardHandler()
         
-        with patch('lightning_reflow.callbacks.pause.improved_keyboard_handler.select.select') as mock_select:
+        with patch('lightning_reflow.callbacks.pause.keyboard_handler.select.select') as mock_select:
             with patch('sys.stdin', mock_stdin):
                 # Add 'pyenv' to input queue
                 mock_stdin.add_input('pyenv')
@@ -132,20 +132,20 @@ class TestImprovedKeyboardHandler:
     
     def test_time_window_detection(self, mock_termios):
         """Test that the 250ms time window correctly distinguishes input types."""
-        handler = ImprovedKeyboardHandler()
+        handler = KeyboardHandler()
         
         # Test that char_window is set correctly
         assert handler._char_window == 0.25
         
         # Test with custom window
-        handler2 = ImprovedKeyboardHandler()
+        handler2 = KeyboardHandler()
         handler2._char_window = 0.1  # 100ms window
         assert handler2._char_window == 0.1
     
     def test_handler_context_manager(self, mock_termios):
         """Test keyboard handler as context manager."""
         with patch('sys.stdin.isatty', return_value=True):
-            handler = ImprovedKeyboardHandler()
+            handler = KeyboardHandler()
             
             with patch.object(handler, 'start_monitoring') as mock_start:
                 with patch.object(handler, 'stop_monitoring') as mock_stop:
@@ -187,15 +187,15 @@ class TestKeyboardHandlerIntegration:
     
     def test_create_keyboard_handler(self):
         """Test creating keyboard handler with factory function."""
-        with patch('lightning_reflow.callbacks.pause.improved_keyboard_handler.HAS_TERMIOS', True):
+        with patch('lightning_reflow.callbacks.pause.keyboard_handler.HAS_TERMIOS', True):
             with patch('sys.stdin.isatty', return_value=True):
-                handler = create_improved_keyboard_handler()
-                assert isinstance(handler, ImprovedKeyboardHandler)
+                handler = create_keyboard_handler()
+                assert isinstance(handler, KeyboardHandler)
     
     def test_create_handler_without_termios(self):
         """Test handler creation when termios is not available."""
-        with patch('lightning_reflow.callbacks.pause.improved_keyboard_handler.HAS_TERMIOS', False):
-            handler = create_improved_keyboard_handler()
+        with patch('lightning_reflow.callbacks.pause.keyboard_handler.HAS_TERMIOS', False):
+            handler = create_keyboard_handler()
             # Should return NoOpKeyboardHandler
             assert not handler.is_available()
             assert handler.get_key() is None

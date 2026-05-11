@@ -4,7 +4,6 @@ import logging
 from typing import Any, Dict, List, Optional
 from tqdm import tqdm
 from lightning.pytorch.callbacks import LearningRateMonitor
-from lightning_reflow.utils.checkpoint.flow_progress_bar_state import FlowProgressBarState
 from lightning_reflow.callbacks.monitoring.metric_manager import MetricManager
 from lightning_reflow.callbacks.monitoring.validation_interval_calculator import ValidationIntervalCalculator
 
@@ -65,9 +64,6 @@ class FlowProgressBarCallback(LearningRateMonitor):
 
         # Progress bar initialization tracking
         self._progress_bar_initialized = False
-
-        # Register for manager state persistence
-        self._register_for_state_persistence()
 
     def _populate_metrics_if_needed(self, force_refresh: bool = False) -> None:
         """Populate metrics using the metric manager."""
@@ -614,18 +610,3 @@ class FlowProgressBarCallback(LearningRateMonitor):
     
 
     
-    def _register_for_state_persistence(self) -> None:
-        """Register this callback for manager state persistence."""
-        try:
-            from lightning_reflow.utils.checkpoint.manager_state import register_manager
-
-            # Use the extracted FlowProgressBarState class
-            state_manager = FlowProgressBarState(self)
-            register_manager(state_manager)
-            # Note: Don't print here as this gets called during __init__
-
-        except ImportError:
-            # Manager state system not available - continue with Lightning's built-in state persistence
-            pass
-        except Exception as e:
-            print(f"FlowProgressBarCallback: Failed to register for state persistence: {e}")
