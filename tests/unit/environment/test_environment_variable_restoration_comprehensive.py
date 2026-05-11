@@ -37,14 +37,8 @@ class TestEnvironmentVariableBasicFunctionality:
         EnvironmentManager._state_manager = None
 
     def test_environment_manager_initialization(self):
-        """Test EnvironmentManager can access state manager."""
-        try:
-            state_manager = EnvironmentManager.get_state_manager()
-            assert state_manager is not None
-        except ImportError:
-            # Expected when running tests in isolation from main project
-            # The EnvironmentManager falls back to local implementation
-            pytest.skip("EnvironmentManager requires main project imports")
+        state_manager = EnvironmentManager.get_state_manager()
+        assert state_manager is not None
 
     def test_extract_environment_from_config_basic(self, tmp_path):
         """Test basic environment variable extraction from config files."""
@@ -302,43 +296,26 @@ class TestEnvironmentManagerStateIntegration:
         EnvironmentManager._state_manager = None
 
     def test_state_manager_creation_and_registration(self):
-        """Test that EnvironmentManager properly creates and registers state manager."""
-        try:
-            # Get state manager (should create if not exists)
-            state_manager = EnvironmentManager.get_state_manager()
-            assert state_manager is not None
-            assert hasattr(state_manager, 'manager_name')
-            assert state_manager.manager_name == "environment_manager"
-            
-            # Should register for checkpoint persistence
-            EnvironmentManager.register_for_checkpoint_persistence()
-            
-        except ImportError:
-            pytest.skip("EnvironmentManager requires main project imports")
+        state_manager = EnvironmentManager.get_state_manager()
+        assert state_manager is not None
+        assert hasattr(state_manager, 'manager_name')
+        assert state_manager.manager_name == "environment_manager"
+
+        EnvironmentManager.register_for_checkpoint_persistence()
 
     def test_state_manager_basic_functionality(self):
-        """Test basic state manager functionality."""
-        try:
-            state_manager = EnvironmentManager.get_state_manager()
-            
-            # Should have basic state management methods
-            assert hasattr(state_manager, 'capture_state')
-            assert hasattr(state_manager, 'restore_state')
-            
-            # Test state serialization/deserialization
-            state = state_manager.capture_state()
-            assert isinstance(state, dict)
-            # Check that state contains expected fields - use actual field names
-            expected_fields = ['env_vars', 'config_sources']
-            for field in expected_fields:
-                assert field in state
-            
-            # Test state restoration
-            result = state_manager.restore_state(state)
-            assert isinstance(result, bool)  # Should return success boolean
-            
-        except ImportError:
-            pytest.skip("EnvironmentManager requires main project imports")
+        state_manager = EnvironmentManager.get_state_manager()
+
+        assert hasattr(state_manager, 'capture_state')
+        assert hasattr(state_manager, 'restore_state')
+
+        state = state_manager.capture_state()
+        assert isinstance(state, dict)
+        for field in ['env_vars', 'config_sources']:
+            assert field in state
+
+        result = state_manager.restore_state(state)
+        assert isinstance(result, bool)
 
 
 class TestErrorHandlingAndEdgeCases:

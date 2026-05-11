@@ -66,33 +66,6 @@ def config_file(sample_config, temp_dir):
 
 
 @pytest.fixture
-def mock_checkpoint(temp_dir):
-    """Create a mock checkpoint with W&B metadata."""
-    checkpoint_data = {
-        'state_dict': {'model.weight': torch.randn(10, 10)},
-        'epoch': 5,
-        'global_step': 1000,
-        'optimizer_states': [{}],
-        'lr_schedulers': [],
-        'wandb_run_id': 'test-run-123',
-        'pause_callback_metadata': {
-            'wandb_run_id': 'test-run-123',
-            'pause_timestamp': 1640995200,
-            'embedded_config_content': yaml.dump({
-                'model': {'class_path': 'lightning_reflow.models.SimpleReflowModel'},
-                'trainer': {'max_epochs': 10}
-            }),
-            'config_source': 'resolved_with_overrides',
-            'callback_version': '4.0.0'
-        }
-    }
-    
-    checkpoint_path = temp_dir / "test_checkpoint.ckpt"
-    torch.save(checkpoint_data, checkpoint_path)
-    return str(checkpoint_path)
-
-
-@pytest.fixture
 def mock_wandb_logger():
     """Mock WandbLogger for testing."""
     logger = Mock()
@@ -116,23 +89,23 @@ def mock_trainer(mock_wandb_logger):
     return trainer
 
 
-# Mock external dependencies
-@pytest.fixture(autouse=True)
+# Opt-in wandb mocking. Tests that need to avoid hitting real wandb should
+# request this fixture explicitly. WandbLogger(offline=True) is sufficient
+# for most tests; use this fixture only when bypassing wandb entirely.
+@pytest.fixture
 def mock_wandb():
-    """Auto-mock wandb to avoid external dependencies."""
+    """Mock wandb.{init,log,finish,config} for tests that need to bypass it."""
     with patch('wandb.init') as mock_init, \
          patch('wandb.log') as mock_log, \
          patch('wandb.finish') as mock_finish, \
          patch('wandb.config') as mock_config:
-        
         mock_init.return_value = Mock()
         mock_config.update = Mock()
-        
         yield {
             'init': mock_init,
             'log': mock_log,
             'finish': mock_finish,
-            'config': mock_config
+            'config': mock_config,
         }
 
 

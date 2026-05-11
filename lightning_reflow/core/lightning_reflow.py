@@ -329,19 +329,7 @@ class LightningReflow:
                 )
                 return
 
-            # Handle W&B run ID based on three cases:
-            # 1. Explicit ID provided: use that ID
-            # 2. 'new' (flag without value): force new run, ignore checkpoint's ID
-            # 3. None (flag not used): extract from checkpoint
-            if wandb_run_id == 'new':
-                logger.info("Forcing new W&B run (--wandb-run-id flag without value)")
-                wandb_run_id = None  # Will create new run
-            elif wandb_run_id:
-                logger.info(f"Using explicit W&B run ID: {wandb_run_id}")
-            else:
-                wandb_run_id = self._extract_wandb_run_id_from_checkpoint(checkpoint_path)
-                if wandb_run_id:
-                    logger.info(f"Extracted W&B run ID from checkpoint: {wandb_run_id}")
+            wandb_run_id = self._resolve_wandb_run_id(wandb_run_id, checkpoint_path)
 
             logger.info(f"Preparing subprocess resume command")
             logger.info(f"   Checkpoint: {checkpoint_path}")
@@ -365,6 +353,29 @@ class LightningReflow:
             logger.error(f"Traceback:\n{traceback.format_exc()}")
             raise
     
+    def _resolve_wandb_run_id(
+        self,
+        requested_id: Optional[str],
+        checkpoint_path: Union[str, Path],
+    ) -> Optional[str]:
+        """Resolve the W&B run id for a resume.
+
+        Rules:
+          - "new" forces a fresh run (returns None).
+          - Any other non-empty string is used verbatim.
+          - None means "extract from checkpoint metadata, fall back to None".
+        """
+        if requested_id == 'new':
+            logger.info("Forcing new W&B run (--wandb-run-id flag without value)")
+            return None
+        if requested_id:
+            logger.info(f"Using explicit W&B run ID: {requested_id}")
+            return requested_id
+        extracted = self._extract_wandb_run_id_from_checkpoint(checkpoint_path)
+        if extracted:
+            logger.info(f"Extracted W&B run ID from checkpoint: {extracted}")
+        return extracted
+
     def _extract_wandb_run_id_from_checkpoint(self, checkpoint_path: Union[str, Path]) -> Optional[str]:
         """Extract W&B run ID from checkpoint file."""
         try:
