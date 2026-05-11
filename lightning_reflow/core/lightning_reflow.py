@@ -396,30 +396,11 @@ class LightningReflow:
             logger.warning(f"⚠️ Failed to extract W&B run ID from checkpoint: {e}")
             return None
 
+    # ---- CLI subprocess plumbing (delegated to cli/resume_subprocess.py) ----
+
     def _extract_original_command(self, checkpoint_path: Union[str, Path]) -> Optional[List[str]]:
-        """Extract original training command from checkpoint metadata.
-
-        This is critical for resume to work correctly when model_class/datamodule_class
-        were passed as positional arguments to LightningReflowCLI.
-        """
-        try:
-            import torch
-            checkpoint = torch.load(str(checkpoint_path), map_location='cpu', weights_only=False)
-
-            # Check pause_callback_metadata for original command
-            metadata = checkpoint.get('pause_callback_metadata', {})
-            original_cmd = metadata.get('original_command')
-
-            if original_cmd and isinstance(original_cmd, list) and len(original_cmd) > 0:
-                logger.info(f"✅ Extracted original command: {' '.join(original_cmd)}")
-                return original_cmd
-            else:
-                logger.debug("ℹ️ No original command found in checkpoint metadata")
-                return None
-
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to extract original command from checkpoint: {e}")
-            return None
+        from ..cli.resume_subprocess import extract_original_command
+        return extract_original_command(checkpoint_path)
 
     def _execute_fit_subprocess(
         self,
@@ -427,324 +408,129 @@ class LightningReflow:
         embedded_config_yaml: Optional[str],
         config_overrides: Optional[List[Union[str, Path]]] = None,
         wandb_run_id: Optional[str] = None,
-        extra_cli_args: Optional[List[str]] = None
+        extra_cli_args: Optional[List[str]] = None,
     ) -> None:
-        """Execute the fit command in a subprocess.
-
-        When *checkpoint_path* is ``None`` this acts as a plain ``fit``
-        (fresh start).  This happens when a resume falls back because the
-        checkpoint artifact was not found.
-        """
-        import os
-        import sys
-        import subprocess
-        import tempfile
-        import yaml
-
-        # Extract original command from checkpoint to use the correct training script
-        # This is CRITICAL for model/datamodule classes passed as positional args
-        original_cmd = (
-            self._extract_original_command(checkpoint_path)
-            if checkpoint_path is not None
-            else None
+        from ..cli.resume_subprocess import execute_fit_subprocess
+        execute_fit_subprocess(
+            checkpoint_path=checkpoint_path,
+            embedded_config_yaml=embedded_config_yaml,
+            config_overrides=config_overrides,
+            wandb_run_id=wandb_run_id,
+            extra_cli_args=extra_cli_args,
         )
 
-        if original_cmd and original_cmd[0].endswith('.py'):
-            # Use the original training script
-            cmd = [sys.executable, original_cmd[0], 'fit']
-            logger.info(f"Using original training script: {original_cmd[0]}")
-        elif sys.argv[0].endswith('.py') and Path(sys.argv[0]).exists():
-            # Use the script that invoked this process (e.g., train.py)
-            # This preserves sys.path modifications made by the invoking script.
-            cmd = [sys.executable, sys.argv[0], 'fit']
-            logger.info("Resume fallback: using invoking script %s", sys.argv[0])
-        else:
-            # Fallback to generic CLI
-            cmd = [sys.executable, '-m', 'lightning_reflow.cli', 'fit']
-            if checkpoint_path is not None:
-                logger.warning("Original command not found, using generic CLI (may fail if model_class was provided)")
-
-        # Handle embedded config from checkpoint FIRST (preserves --config --ckpt_path order)
-        temp_config_path = self._write_temp_config(embedded_config_yaml)
-        temp_wandb_config_path = None
-
-        try:
-            # Add temp config as the BASE config file
-            if temp_config_path:
-                cmd.extend(['--config', temp_config_path])
-                logger.info(f"Using Lightning's original merged config from checkpoint as base")
-            else:
-                logger.info("No embedded config found in checkpoint, resuming without it.")
-
-            # Configure W&B logger for run resumption if we have a run ID
-            # NOTE: This must come BEFORE user overrides so user configs can override W&B settings
-            if wandb_run_id:
-                temp_wandb_config_path = self._add_wandb_resume_config(cmd, wandb_run_id, embedded_config_yaml)
-            else:
-                logger.info("No W&B run ID specified - will create new W&B run if logger is configured")
-                temp_wandb_config_path = None
-
-            # Add any user-provided override configs AFTER W&B config so they have higher precedence
-            if config_overrides:
-                for config_file in config_overrides:
-                    cmd.extend(['--config', str(config_file)])
-                logger.info(f"Applying override configs with highest precedence: {config_overrides}")
-
-            # Add checkpoint path LAST so it overrides any ckpt_path in configs
-            if checkpoint_path is not None:
-                cmd.extend(['--ckpt_path', str(checkpoint_path)])
-            
-            # Pass through any additional Lightning CLI arguments
-            if extra_cli_args:
-                cmd.extend(extra_cli_args)
-                logger.info(f"🔧 Passing through additional arguments: {extra_cli_args}")
-            
-            logger.info(f"🚀 Executing: {' '.join(cmd)}")
-
-            # Propagate the current process's sys.path via PYTHONPATH so that
-            # any path modifications made by the invoking script (e.g.
-            # sys.path.insert(0, project_root)) are available in the subprocess.
-            env = os.environ.copy()
-            existing_pythonpath = env.get("PYTHONPATH", "")
-            extra_paths = os.pathsep.join(p for p in sys.path if p)
-            env["PYTHONPATH"] = (
-                (extra_paths + os.pathsep + existing_pythonpath)
-                if existing_pythonpath
-                else extra_paths
-            )
-
-            # Execute the fit command in subprocess
-            result = subprocess.run(cmd, check=True, env=env)
-            sys.exit(result.returncode)
-            
-        except subprocess.CalledProcessError as e:
-            logger.error(f"❌ Subprocess failed with return code {e.returncode}")
-            sys.exit(e.returncode)
-        finally:
-            # Cleanup temp config files
-            self._cleanup_temp_config(temp_config_path)
-            if temp_wandb_config_path:
-                self._cleanup_temp_config(temp_wandb_config_path)
-    
     def _write_temp_config(self, embedded_config_yaml: Optional[str]) -> Optional[str]:
-        """Write embedded config YAML to temporary file."""
-        if not embedded_config_yaml:
-            return None
-            
-        try:
-            import tempfile
-            import os
-            
-            temp_config_fd, temp_config_path = tempfile.mkstemp(
-                suffix='.yaml', 
-                prefix='resume_config_'
-            )
-            with os.fdopen(temp_config_fd, 'w') as f:
-                f.write(embedded_config_yaml)
-            return temp_config_path
-        except Exception as e:
-            logger.error(f"Failed to create temporary config file: {e}")
-            return None
-    
+        from ..cli.resume_subprocess import write_temp_config
+        return write_temp_config(embedded_config_yaml)
+
     def _cleanup_temp_config(self, temp_config_path: Optional[str]) -> None:
-        """Clean up temporary config file."""
-        if temp_config_path and os.path.exists(temp_config_path):
-            try:
-                os.unlink(temp_config_path)
-                logger.info(f"🗑️ Cleaned up temporary config: {temp_config_path}")
-            except Exception:
-                pass
-    
+        from ..cli.resume_subprocess import cleanup_temp_config
+        cleanup_temp_config(temp_config_path)
+
     def _add_wandb_resume_config(
-        self, 
-        cmd: List[str], 
-        wandb_run_id: str, 
-        embedded_config_yaml: Optional[str]
+        self, cmd: List[str], wandb_run_id: str, embedded_config_yaml: Optional[str],
     ) -> Optional[str]:
-        """Add W&B logger configuration for resuming a run."""
-        try:
-            import tempfile
-            import os
-            import yaml
-            
-            # Parse embedded config to check existing logger configuration
-            existing_config = {}
-            if embedded_config_yaml:
-                existing_config = yaml.safe_load(embedded_config_yaml) or {}
-            
-            # Check if there's already a logger configured
-            trainer_config = existing_config.get('trainer', {})
-            existing_logger = trainer_config.get('logger', None)
-            
-            # Prepare W&B logger config
-            if isinstance(existing_logger, dict) and existing_logger.get('class_path', '').endswith('WandbLogger'):
-                # Update existing W&B logger config
-                logger.info("📝 Updating existing W&B logger configuration for resume")
-                if 'init_args' not in existing_logger:
-                    existing_logger['init_args'] = {}
-                existing_logger['init_args']['id'] = wandb_run_id
-                existing_logger['init_args']['resume'] = 'allow'
-                wandb_config = {'trainer': {'logger': existing_logger}}
-            else:
-                # Create new W&B logger config
-                logger.info("📝 Creating new W&B logger configuration for resume")
-                wandb_logger_config = {
-                    'class_path': 'lightning.pytorch.loggers.WandbLogger',
-                    'init_args': {
-                        'id': wandb_run_id,
-                        'resume': 'allow',
-                        'log_model': False  # Don't log models by default during resume
-                    }
-                }
-                wandb_config = {'trainer': {'logger': wandb_logger_config}}
-            
-            # Write config to temporary file
-            wandb_config_yaml = yaml.dump(wandb_config)
-            temp_wandb_config_fd, temp_wandb_config_path = tempfile.mkstemp(
-                suffix='.yaml', 
-                prefix='wandb_logger_config_'
-            )
-            
-            with os.fdopen(temp_wandb_config_fd, 'w') as f:
-                f.write(wandb_config_yaml)
-            
-            # Add as config file (will be merged with others)
-            cmd.extend(['--config', temp_wandb_config_path])
-            logger.info(f"🔄 Configuring W&B logger to resume run: {wandb_run_id}")
-            
-            return temp_wandb_config_path
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to create W&B logger config: {e}")
-            if 'temp_wandb_config_path' in locals() and os.path.exists(temp_wandb_config_path):
-                try:
-                    os.unlink(temp_wandb_config_path)
-                except Exception:
-                    pass
-            return None
+        from ..cli.resume_subprocess import add_wandb_resume_config
+        return add_wandb_resume_config(cmd, wandb_run_id, embedded_config_yaml)
     
     def _create_model(self) -> pl.LightningModule:
-        """Create model from configuration with enhanced resume support."""
+        """Create the LightningModule, using `model_class` if provided.
+
+        When `model_class` is set, args are collected from
+        `_collect_model_args_for_class()` and the class is instantiated directly.
+        Otherwise we resolve `model.class_path` from the config dict.
+        """
         if self.model_class:
-            model_args = {**self.model_init_args}
-            
-            # PRIMARY: Use Lightning's proven hyper_parameters during resume
-            if hasattr(self, '_resume_checkpoint_path'):
-                logger.info("⚡ Attempting to use Lightning's hyper_parameters (primary)")
-                try:
-                    lightning_args = self._extract_model_args_from_checkpoint(self._resume_checkpoint_path)
-                    if lightning_args:
-                        model_args.update(lightning_args)
-                        logger.info(f"✅ Using Lightning's hyper_parameters for model creation")
-                except Exception as e:
-                    logger.warning(f"⚠️ Lightning hyper_parameters extraction failed: {e}")
-            
-            # FALLBACK: Use embedded config if Lightning's approach didn't provide args OR for fresh training
-            if not model_args or not hasattr(self, '_resume_checkpoint_path'):
-                if not hasattr(self, '_resume_checkpoint_path'):
-                    logger.info("🆕 Fresh training - using config files")
-                else:
-                    logger.info("🔄 Falling back to embedded config extraction")
-                    
-                config_model_section = self.config_loader.get_section("model")
-                logger.info(f"config_model_section from config_loader: {config_model_section is not None}, type={type(config_model_section) if config_model_section else 'None'}")
-                
-                # Also try direct access to self.config
-                if hasattr(self, 'config') and self.config and 'model' in self.config:
-                    logger.info(f"Found model in self.config directly")
-                    config_model_section = self.config['model']
-                    logger.info(f"config_model_section type: {type(config_model_section)}, value: {config_model_section if not isinstance(config_model_section, dict) else 'is a dict'}")
-                
-                if config_model_section:
-                    logger.info(f"config_model_section keys: {list(config_model_section.keys()) if isinstance(config_model_section, dict) else 'Not a dict'}")
-                    # The primary source of arguments should be the 'init_args' subsection
-                    config_model_args = config_model_section.get("init_args", {})
-                    logger.info(f"config_model_args: {list(config_model_args.keys()) if isinstance(config_model_args, dict) and config_model_args else 'Empty or None'}")
-                    if isinstance(config_model_args, dict):
-                        model_args.update(config_model_args)
-                    
-                    # Also include top-level args from the 'model' section, for convenience
-                    for key, value in config_model_section.items():
-                        if key not in ["class_path", "init_args"]:
-                            model_args[key] = value
-                    
-                    if model_args:
-                        logger.info(f"✅ Using config for model creation")
-
-            # Convert any nested dictionaries (like 'backbone') to their proper dataclass types
-            try:
-                from ..utils.config.config_synthesis import convert_config_dict_to_dataclasses
-                logger.info(f"Converting model_args with keys: {list(model_args.keys())}")
-                if 'backbone' in model_args and isinstance(model_args['backbone'], dict):
-                    if 'init_args' in model_args['backbone'] and isinstance(model_args['backbone']['init_args'], dict):
-                        logger.info(f"  backbone.init_args.input_size BEFORE conversion: {model_args['backbone']['init_args'].get('input_size', 'NOT FOUND')}")
-                model_args = convert_config_dict_to_dataclasses(model_args)
-                logger.info(f"Config conversion successful")
-                if 'backbone' in model_args:
-                    logger.info(f"  backbone type after conversion: {type(model_args['backbone'])}")
-                    if hasattr(model_args['backbone'], 'init_args'):
-                        logger.info(f"  backbone.init_args.input_size AFTER conversion: {getattr(model_args['backbone'].init_args, 'input_size', 'NO ATTR')}")
-            except ImportError as e:
-                logger.warning(f"Config synthesis import failed: {e}, continuing with dict args")
-            except Exception as e:
-                logger.warning(f"Config synthesis failed: {e}, continuing with dict args")
-                import traceback
-                traceback.print_exc()
-            
-            # CRITICAL: Recursively instantiate any nested class_path configurations
-            # This handles cases where model_args contains nested models (e.g., dynamics_model)
-            # that are specified as class_path dicts and need to be instantiated into objects.
-            # This is essential for HPO where search space returns instances that may override
-            # YAML-based class_path configs.
-            try:
-                from ..utils.config import instantiate_class_path_recursive, should_instantiate_nested_configs
-
-                if should_instantiate_nested_configs(model_args):
-                    logger.info("Detected nested class_path configs - performing recursive instantiation")
-                    original_keys = list(model_args.keys())
-                    model_args = instantiate_class_path_recursive(model_args, parent_key="model_args")
-                    logger.info(f"Recursive instantiation complete for: {original_keys}")
-            except ImportError as e:
-                logger.warning(f"Could not import instantiate_class_path_recursive: {e}")
-            except Exception as e:
-                logger.warning(f"Recursive instantiation failed: {e}, continuing with existing model_args")
-                import traceback
-                traceback.print_exc()
-
-            logger.info(f"Creating model: {self.model_class.__name__} with args: {list(model_args.keys()) if model_args else 'EMPTY'}")
-
-            # Debug logging for troubleshooting
+            model_args = self._collect_model_args_for_class()
+            model_args = self._finalize_model_args(model_args)
+            logger.info(
+                "Creating model: %s with arg keys: %s",
+                self.model_class.__name__, list(model_args.keys()) if model_args else "EMPTY",
+            )
             if not model_args:
-                logger.error("❌ CRITICAL: Model args are empty! This will cause process_sampler=None error")
-                logger.error("   Config sections available: %s", list(self.config.keys()) if self.config else "No config")
-                if config_model_section:
-                    logger.error("   Model section keys: %s", list(config_model_section.keys()))
-
+                logger.error(
+                    "Model args are empty — config sections available: %s",
+                    list(self.config.keys()) if self.config else "no config",
+                )
             return self.model_class(**model_args)
-        
-        else:
-            # Create from config
-            model_config = self.config_loader.get_section("model")
-            if not model_config:
-                raise ValueError("No model configuration found and no model_class provided")
-            
-            class_path = model_config.get("class_path")
-            init_args = model_config.get("init_args", {})
-            
-            if not class_path:
-                raise ValueError("model.class_path not specified in configuration")
-            
-            # Convert init_args if needed
+        return self._create_model_from_config()
+
+    def _collect_model_args_for_class(self) -> Dict[str, Any]:
+        """Gather init kwargs for `self.model_class` from checkpoint hparams or config."""
+        model_args: Dict[str, Any] = {**self.model_init_args}
+
+        # PRIMARY: Use Lightning's hyper_parameters when resuming.
+        if hasattr(self, '_resume_checkpoint_path'):
             try:
-                from ..utils.config.config_synthesis import convert_config_dict_to_dataclasses
-                init_args = convert_config_dict_to_dataclasses(init_args)
+                lightning_args = self._extract_model_args_from_checkpoint(
+                    self._resume_checkpoint_path,
+                )
+                if lightning_args:
+                    model_args.update(lightning_args)
+                    logger.info("Using Lightning's hyper_parameters for model creation")
             except Exception as e:
-                logger.warning(f"Config synthesis failed for init_args: {e}")
-            
-            # Import and instantiate the model class
-            model_class = self._import_class(class_path)
-            logger.info(f"Creating model from config: {class_path}")
-            return model_class(**init_args)
+                logger.warning("Lightning hyper_parameters extraction failed: %s", e)
+
+        # FALLBACK / FRESH START: pull from the loaded config.
+        if not model_args or not hasattr(self, '_resume_checkpoint_path'):
+            config_model_section = self.config_loader.get_section("model")
+            if (not config_model_section) and getattr(self, 'config', None):
+                config_model_section = self.config.get('model')
+
+            if isinstance(config_model_section, dict):
+                config_model_args = config_model_section.get("init_args", {})
+                if isinstance(config_model_args, dict):
+                    model_args.update(config_model_args)
+                for key, value in config_model_section.items():
+                    if key not in ("class_path", "init_args"):
+                        model_args[key] = value
+
+        return model_args
+
+    def _finalize_model_args(self, model_args: Dict[str, Any]) -> Dict[str, Any]:
+        """Run dataclass conversion + recursive class_path instantiation on model args."""
+        try:
+            from ..utils.config.config_synthesis import convert_config_dict_to_dataclasses
+            model_args = convert_config_dict_to_dataclasses(model_args)
+        except ImportError as e:
+            logger.warning("Config synthesis import failed: %s, continuing with dict args", e)
+        except Exception as e:
+            logger.warning("Config synthesis failed: %s, continuing with dict args", e)
+
+        try:
+            from ..utils.config import (
+                instantiate_class_path_recursive,
+                should_instantiate_nested_configs,
+            )
+            if should_instantiate_nested_configs(model_args):
+                model_args = instantiate_class_path_recursive(model_args, parent_key="model_args")
+        except ImportError as e:
+            logger.warning("Could not import instantiate_class_path_recursive: %s", e)
+        except Exception as e:
+            logger.warning("Recursive instantiation failed: %s, continuing with existing args", e)
+
+        return model_args
+
+    def _create_model_from_config(self) -> pl.LightningModule:
+        """Instantiate the model from the YAML config's `model.class_path`."""
+        model_config = self.config_loader.get_section("model")
+        if not model_config:
+            raise ValueError("No model configuration found and no model_class provided")
+
+        class_path = model_config.get("class_path")
+        init_args = model_config.get("init_args", {})
+        if not class_path:
+            raise ValueError("model.class_path not specified in configuration")
+
+        try:
+            from ..utils.config.config_synthesis import convert_config_dict_to_dataclasses
+            init_args = convert_config_dict_to_dataclasses(init_args)
+        except Exception as e:
+            logger.warning("Config synthesis failed for init_args: %s", e)
+
+        model_class = self._import_class(class_path)
+        logger.info("Creating model from config: %s", class_path)
+        return model_class(**init_args)
     
     def _extract_model_args_from_checkpoint(self, checkpoint_path: str) -> Dict[str, Any]:
         """

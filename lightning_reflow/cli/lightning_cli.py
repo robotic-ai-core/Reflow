@@ -338,46 +338,14 @@ class LightningReflowCLI(LightningCLI):
             logger.warning(f"⚠️ Failed to register state managers: {e}")
     
     def _register_checkpoint_safe_globals(self) -> None:
+        """Delegate to the public idempotent helper.
+
+        Must run before super().__init__() because LightningCLI's _parse_ckpt_path
+        uses torch.load(weights_only=True), which rejects numpy/TorchVersion
+        unless they're allowlisted first.
         """
-        Register safe globals for torch.load with weights_only=True.
-
-        MUST be called BEFORE super().__init__() because Lightning CLI's _parse_ckpt_path()
-        loads checkpoints with weights_only=True, which will fail if numpy or torch
-        version objects are present.
-
-        Registers:
-        - numpy arrays and dtypes (for checkpoint data)
-        - torch.torch_version.TorchVersion (Lightning stores pytorch version in checkpoints)
-
-        This is safe for our own checkpoints that may contain these objects.
-        """
-        try:
-            import numpy as np
-            import torch
-
-            # Collect all numpy dtype classes for safe loading
-            numpy_dtypes = []
-            if hasattr(np, 'dtypes'):
-                numpy_dtypes = [getattr(np.dtypes, attr) for attr in dir(np.dtypes) if 'DType' in attr]
-
-            # Register safe globals for numpy objects
-            safe_globals = [
-                np._core.multiarray._reconstruct,
-                np.ndarray,
-                np.dtype,
-            ] + numpy_dtypes
-
-            # Register torch version class - Lightning stores this in checkpoints
-            # as 'pytorch-lightning_version' which uses TorchVersion type
-            if hasattr(torch, 'torch_version') and hasattr(torch.torch_version, 'TorchVersion'):
-                safe_globals.append(torch.torch_version.TorchVersion)
-
-            torch.serialization.add_safe_globals(safe_globals)
-            logger.debug(f"✅ Registered {len(safe_globals)} safe globals for checkpoint loading")
-
-        except Exception as e:
-            # Don't fail initialization if this doesn't work
-            logger.warning(f"⚠️  Could not register safe globals: {e}")
+        from ..utils.checkpoint.safe_globals import register_checkpoint_safe_globals
+        register_checkpoint_safe_globals()
 
     def _is_resume_command(self) -> bool:
         """Check if the command is a resume command."""

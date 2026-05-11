@@ -145,12 +145,15 @@ class WandbArtifactManager:
                 )
 
             return full_artifact_path
-            
-        except Exception as e:
+
+        except (OSError, IOError, RuntimeError, ValueError, AttributeError) as e:
+            # Operational failures: log + return None so the caller can fall back
+            # to local-only. Other exception types (KeyboardInterrupt, SystemExit,
+            # programming bugs) propagate.
             if self.verbose and trainer.is_global_zero:
                 self.logger.warning(f"Failed to upload {artifact_name} artifact: {e}")
             return None
-    
+
     def upload_checkpoint_artifact(
         self,
         trainer: Trainer,

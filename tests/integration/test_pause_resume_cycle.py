@@ -29,25 +29,12 @@ from lightning_reflow.callbacks.pause import PauseCallback
 @pytest.fixture(scope="module", autouse=True)
 def _register_checkpoint_safe_globals():
     """Pause checkpoints contain numpy/torch-version objects; without these
-    registrations Lightning's weights_only=True load path raises.
-
-    LightningReflowCLI._register_checkpoint_safe_globals does the same thing
-    as a side effect of CLI construction — this fixture registers them
-    explicitly so a direct pl.Trainer-based resume works in the test.
-    """
-    import numpy as np
-    safe_globals = [
-        np._core.multiarray._reconstruct,
-        np.ndarray,
-        np.dtype,
-    ]
-    if hasattr(np, "dtypes"):
-        safe_globals.extend(
-            getattr(np.dtypes, attr) for attr in dir(np.dtypes) if "DType" in attr
-        )
-    if hasattr(torch, "torch_version") and hasattr(torch.torch_version, "TorchVersion"):
-        safe_globals.append(torch.torch_version.TorchVersion)
-    torch.serialization.add_safe_globals(safe_globals)
+    registrations Lightning's weights_only=True load path raises. Call the
+    public helper that LightningReflowCLI uses internally."""
+    from lightning_reflow.utils.checkpoint.safe_globals import (
+        register_checkpoint_safe_globals,
+    )
+    register_checkpoint_safe_globals()
 
 
 class _TinyClassifier(pl.LightningModule):
