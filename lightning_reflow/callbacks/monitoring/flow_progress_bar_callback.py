@@ -167,12 +167,15 @@ class FlowProgressBarCallback(LearningRateMonitor):
         if not self.is_enabled: return
 
         self._metric_manager.set_batch_idx(batch_idx)
+
+        # Gate metric refresh behind refresh_rate: reading callback_metrics
+        # forces a .cpu() on the in-flight loss tensor, which blocks until
+        # the CUDA stream drains (~200 ms/step on compute-heavy runs).
+        if batch_idx % self._refresh_rate != 0:
+            return
+
         self._update_metrics()
         self._populate_metrics_if_needed(force_refresh=False)
-        
-        if batch_idx % self._refresh_rate != 0: 
-            return
-            
         self._update_total_steps_bar(trainer)
         self._update_interval_bar(trainer)
         
@@ -240,18 +243,25 @@ class FlowProgressBarCallback(LearningRateMonitor):
             return
 
         self._metric_manager.set_batch_idx(batch_idx)
+
+        # Gate everything behind refresh_rate. Previously _update_metrics() ran
+        # every step; reading callback_metrics forces a .cpu() on the in-flight
+        # loss tensor and blocks until the CUDA stream drains (~200 ms/step on
+        # compute-heavy runs). At refresh_rate=1 (default) behaviour is
+        # unchanged; at refresh_rate>1 the bar advances in chunks, like tqdm.
+        if batch_idx % self._refresh_rate != 0:
+            return
+
         self._update_metrics()
         self._populate_metrics_if_needed(force_refresh=False)
-        
-        if batch_idx % self._refresh_rate == 0:
-            self._update_total_steps_bar(trainer)
-            self._update_interval_bar(trainer)
-        
+        self._update_total_steps_bar(trainer)
+        self._update_interval_bar(trainer)
+
         # Update progress bars
         self._update_progress_bar(self.total_steps_bar, trainer.global_step)
         interval_progress = self._calculate_interval_progress(trainer, batch_idx)
         self._update_progress_bar(self.current_interval_bar, interval_progress)
-        
+
         # Update postfix displays
         self._update_global_bar_postfix()
         self._update_interval_bar_postfix()
