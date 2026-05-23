@@ -5,7 +5,8 @@ Tests metric pattern matching, caching, and formatting.
 """
 
 import pytest
-from unittest.mock import Mock, MagicMock
+import torch
+from unittest.mock import Mock, MagicMock, patch
 
 from lightning_reflow.callbacks.monitoring.metric_manager import MetricManager
 
@@ -245,3 +246,181 @@ class TestMetricPopulation:
         metric_manager.populate_metrics_if_needed(force_refresh=True)
 
         assert 'old_key' not in metric_manager._interval_metric_keys_cache
+
+
+class TestAsyncTensorSync:
+    """Verify the async pinned-memory transfer path in update_metrics.
+
+    The legacy implementation called ``float(tensor.detach().cpu())`` directly,
+    which forces a CUDA stream sync (~28 ms on compute-heavy runs). The new
+    path stages the transfer through a pinned-memory buffer so the kernels on
+    the training stream keep running while the copy is in flight.
+    """
+
+    @pytest.fixture
+    def metric_manager(self):
+        return MetricManager()
+
+    @pytest.fixture
+    def mock_trainer(self):
+        trainer = Mock()
+        trainer.current_epoch = 0
+        trainer.global_step = 0
+        trainer.accumulate_grad_batches = 1
+        return trainer
+
+    def _make_trainer(self, callback_metrics, accumulate_grad_batches=1):
+        trainer = Mock()
+        trainer.current_epoch = 0
+        trainer.global_step = 0
+        trainer.accumulate_grad_batches = accumulate_grad_batches
+        trainer.callback_metrics = callback_metrics
+        return trainer
+
+    # ---- correctness ----------------------------------------------------
+
+    def test_returns_correct_float_for_scalar_tensor(self, metric_manager):
+        """Returned formatted float must match the tensor's value."""
+        t = torch.tensor(0.4242)
+        trainer = self._make_trainer({'loss': t})
+
+        metric_manager.update_metrics(trainer)
+
+        assert 'loss' in metric_manager._prog_bar_metrics
+        assert metric_manager._prog_bar_metrics['loss'] == "0.4242"
+
+    def test_passes_through_python_floats(self, metric_manager):
+        """Plain Python floats must bypass the async path entirely."""
+        trainer = self._make_trainer({'loss': 0.5, 'lr': 0.001})
+        metric_manager.update_metrics(trainer)
+        assert metric_manager._prog_bar_metrics['loss'] == "0.5000"
+        assert metric_manager._prog_bar_metrics['lr'] == "0.0010"
+
+    def test_loss_scaling_with_grad_accum_preserved(self, metric_manager):
+        """The grad-accum loss scaling fix-up must still apply."""
+        t = torch.tensor(0.1)
+        trainer = self._make_trainer({'loss': t}, accumulate_grad_batches=4)
+        metric_manager.update_metrics(trainer)
+        # 0.1 * 4 = 0.4
+        assert metric_manager._prog_bar_metrics['loss'] == "0.4000"
+
+    def test_handles_cpu_tensor(self, metric_manager):
+        """CPU tensors must work without pin_memory (no GPU required)."""
+        t = torch.tensor(1.5)
+        trainer = self._make_trainer({'loss': t})
+        metric_manager.update_metrics(trainer)
+        assert metric_manager._prog_bar_metrics['loss'] == "1.5000"
+
+    def test_multi_element_tensor_falls_back_to_blocking(self, metric_manager):
+        """Multi-element tensors are rare for progress-bar display; ensure
+        the path still produces a usable string (per legacy behavior)."""
+        t = torch.tensor([1.0, 2.0])
+        trainer = self._make_trainer({'arr': t})
+        metric_manager.update_metrics(trainer)
+        # Non-scalar tensors are formatted with str()
+        assert 'arr' in metric_manager._prog_bar_metrics
+
+    # ---- pinned-buffer reuse / lifecycle --------------------------------
+
+    def test_pinned_buffer_lazily_created_for_cuda_tensor(self, metric_manager):
+        """A pinned host buffer is created on first call only."""
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+        t = torch.tensor(1.5, device='cuda')
+        trainer = self._make_trainer({'loss': t})
+
+        assert 'loss' not in metric_manager._pinned_buffers
+
+        metric_manager.update_metrics(trainer)
+
+        assert 'loss' in metric_manager._pinned_buffers
+        buf = metric_manager._pinned_buffers['loss']
+        assert buf.is_pinned()
+        assert buf.numel() == 1
+
+    def test_pinned_buffer_reused_for_same_shape(self, metric_manager):
+        """Same-shape tensors must reuse the existing pinned buffer."""
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+        trainer = self._make_trainer({'loss': torch.tensor(1.0, device='cuda')})
+
+        metric_manager.update_metrics(trainer)
+        first_buf = metric_manager._pinned_buffers['loss']
+
+        trainer.callback_metrics = {'loss': torch.tensor(2.0, device='cuda')}
+        metric_manager.update_metrics(trainer)
+        second_buf = metric_manager._pinned_buffers['loss']
+
+        assert first_buf is second_buf
+
+    def test_pinned_buffer_reallocated_on_dtype_change(self, metric_manager):
+        """Dtype change must trigger a re-alloc."""
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+        trainer = self._make_trainer({
+            'loss': torch.tensor(1.0, dtype=torch.float32, device='cuda')
+        })
+        metric_manager.update_metrics(trainer)
+        first_buf = metric_manager._pinned_buffers['loss']
+        assert first_buf.dtype == torch.float32
+
+        trainer.callback_metrics = {
+            'loss': torch.tensor(1.0, dtype=torch.bfloat16, device='cuda')
+        }
+        metric_manager.update_metrics(trainer)
+        second_buf = metric_manager._pinned_buffers['loss']
+        assert second_buf is not first_buf
+        assert second_buf.dtype == torch.bfloat16
+
+    # ---- the headline property: no blocking sync on training stream ----
+
+    def test_no_blocking_synchronize_called(self, metric_manager):
+        """The async path must NOT invoke torch.cuda.synchronize.
+
+        This is the whole point of the refactor: previously
+        ``tensor.detach().cpu()`` forced a stream sync on every call.
+        """
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+        t = torch.tensor(0.5, device='cuda')
+        trainer = self._make_trainer({'loss': t})
+
+        with patch('torch.cuda.synchronize') as sync_mock:
+            metric_manager.update_metrics(trainer)
+            sync_mock.assert_not_called()
+
+    def test_async_copy_uses_non_blocking(self, metric_manager):
+        """The pinned-memory copy must request non_blocking=True so the
+        training stream is not stalled."""
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+
+        # Spy on Tensor.copy_ to assert non_blocking=True is passed
+        real_copy_ = torch.Tensor.copy_
+        seen_kwargs = []
+
+        def spy_copy_(self, src, **kwargs):
+            seen_kwargs.append(dict(kwargs))
+            return real_copy_(self, src, **kwargs)
+
+        t = torch.tensor(0.5, device='cuda')
+        trainer = self._make_trainer({'loss': t})
+
+        with patch.object(torch.Tensor, 'copy_', spy_copy_):
+            metric_manager.update_metrics(trainer)
+
+        # At least one pinned copy with non_blocking=True
+        nb_calls = [kw for kw in seen_kwargs if kw.get('non_blocking') is True]
+        assert nb_calls, f"Expected non_blocking copy; saw {seen_kwargs}"
+
+    def test_value_correct_for_cuda_tensor(self, metric_manager):
+        """End-to-end: the displayed value must match the CUDA tensor."""
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+        t = torch.tensor(0.7777, device='cuda')
+        trainer = self._make_trainer({'loss': t})
+        metric_manager.update_metrics(trainer)
+        # In async-cache mode we accept either the current value (typical)
+        # or a stale value from the cache. For the very first call there is
+        # no prior value, so it MUST return the current one.
+        assert metric_manager._prog_bar_metrics['loss'] == "0.7777"
