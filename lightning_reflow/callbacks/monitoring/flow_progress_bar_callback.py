@@ -252,8 +252,15 @@ class FlowProgressBarCallback(LearningRateMonitor):
         if batch_idx % self._refresh_rate != 0:
             return
 
-        self._update_metrics()
-        self._populate_metrics_if_needed(force_refresh=False)
+        # IMPORTANT: skip _update_metrics here.  Profile (Agent — AutoFPV
+        # exp7_both, 2026-05-24) attributed ~150 ms/step of the on_train_batch_end
+        # cost to Lightning's convert_tensors_to_scalars iterating every
+        # logged tensor through .item().  on_train_batch_start of the SAME
+        # batch already refreshed the metric cache; the postfix here shows
+        # those values (i.e. previous-step values until the NEXT batch_start
+        # fires).  Net display lag = 1 step, invisible to humans, but the
+        # CUDA-sync cost on the hot path drops to zero.  The bar
+        # position/total updates still fire so progress feels responsive.
         self._update_total_steps_bar(trainer)
         self._update_interval_bar(trainer)
 
